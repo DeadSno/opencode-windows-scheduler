@@ -1,6 +1,6 @@
 {
   "name": "opencode-windows-scheduler",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Local-first scheduling and orchestration for OpenCode v2 agent jobs: cron, DAG pipelines, matrix fan-out, quality gates and observability. Free and open source (MIT).",
   "license": "MIT",
   "author": "opencode-windows-scheduler contributors",

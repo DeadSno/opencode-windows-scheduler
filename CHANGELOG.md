@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-13
+
 ### Fixed
 
 - TUI-панель теперь обновляется каждые 5 секунд через reactive store контекста и показывает паузу, а не статический снимок первого рендера.
@@ -102,7 +104,8 @@ First public release.
 - Deleting a matrix parent deletes its family, but deleting a workspace does not touch existing matrix jobs.
 - Agent tools cover a subset of the RPC surface (see roadmap item 0.4).
 
-[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/DeadSno/opencode-windows-scheduler/releases/tag/v1.0.0
