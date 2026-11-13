@@ -375,7 +375,7 @@ const GetSettingsInput = {
   additionalProperties: false,
 } as const;
 
-/** Настройки уведомлений: webhook (Discord/Slack/generic). */
+/** Настройки уведомлений: webhook, шаблоны, фильтры, матрицы и дайджест (Спринт 20). */
 const NotificationSettingsSchema = {
   type: "object" as const,
   properties: {
@@ -386,8 +386,47 @@ const NotificationSettingsSchema = {
       properties: {
         enabled: { type: "boolean" },
         url: { type: "string" },
+        timeoutMs: { type: "number" },
+        retryCount: { type: "number" },
+        retryDelayMs: { type: "number" },
       },
       required: ["enabled", "url"],
+    },
+    templates: {
+      type: "object" as const,
+      properties: {
+        success: { type: "string" },
+        error: { type: "string" },
+      },
+      required: ["success", "error"],
+    },
+    filters: {
+      type: "object" as const,
+      properties: {
+        include: { type: "array", items: { type: "string" } },
+        exclude: { type: "array", items: { type: "string" } },
+      },
+      required: ["include", "exclude"],
+    },
+    matrix: {
+      type: "object" as const,
+      properties: {
+        enabled: { type: "boolean" },
+        onPartial: { type: "boolean" },
+        onAllFailed: { type: "boolean" },
+        stuckAfterMinutes: { type: "number" },
+      },
+      required: ["enabled", "onPartial", "onAllFailed", "stuckAfterMinutes"],
+    },
+    digest: {
+      type: "object" as const,
+      properties: {
+        enabled: { type: "boolean" },
+        frequency: { type: "string", enum: ["daily", "weekly"] },
+        time: { type: "string" },
+        lastSentAt: { type: ["string", "null"] },
+      },
+      required: ["enabled", "frequency", "time"],
     },
   },
   required: ["enabled", "onlyOnError"],
@@ -495,6 +534,22 @@ const TestNotificationInput = {
 } as const;
 
 const TestNotificationOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+  },
+  required: ["success", "message"],
+} as const;
+
+/** Ручная отправка дайджеста (Спринт 20); не сдвигает плановое расписание. */
+const SendDigestInput = {
+  type: "object" as const,
+  properties: {},
+  additionalProperties: false,
+} as const;
+
+const SendDigestOutput = {
   type: "object" as const,
   properties: {
     success: { type: "boolean" },
@@ -1022,6 +1077,10 @@ export const SchedulerRpc = Rpc.define({
     test_notification: {
       input: TestNotificationInput,
       output: TestNotificationOutput,
+    },
+    send_digest: {
+      input: SendDigestInput,
+      output: SendDigestOutput,
     },
   },
   events: {},

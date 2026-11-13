@@ -127,7 +127,7 @@ from their clones instead of their own last run.
 | `src/workspaces.ts` | Workspace registry and path validation |
 | `src/templates.ts` | Reusable task templates |
 | `src/settings.ts` | Plugin settings: notifications and history retention |
-| `src/notifications.ts` | Webhook notifications |
+| `src/notifications.ts` | Webhook delivery with retries/backoff, templates, task filters, matrix and stuck-clone notifications, daily/weekly digest |
 | `src/history.ts` | History model and status types |
 | `src/version.ts` | Runtime plugin version (reads package.json) |
 | `src/core/retention.ts` | Daily history prune and incremental vacuum |

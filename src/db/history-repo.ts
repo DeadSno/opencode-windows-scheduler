@@ -310,6 +310,29 @@ export function countRunningRecords(): number {
   return Number(row?.count) || 0;
 }
 
+/** Запись о незавершённом запуске — для детектора зависших матриц (Спринт 20). */
+export interface RunningHistoryRecord {
+  id: number;
+  taskName: string;
+  startedAt: string;
+}
+
+/** Список активных запусков (finished_at IS NULL), самые старые сверху. */
+export function listRunningRecords(): RunningHistoryRecord[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, task_name, started_at FROM history
+       WHERE finished_at IS NULL
+       ORDER BY started_at ASC, id ASC`
+    )
+    .all() as any[];
+  return rows.map((row) => ({
+    id: Number(row.id) || 0,
+    taskName: String(row.task_name ?? ""),
+    startedAt: String(row.started_at ?? ""),
+  }));
+}
+
 /** Параметры очистки истории (Спринт 18). 0 — ограничение выключено. */
 export interface PruneHistoryOptions {
   /** Удалять завершённые записи старше N дней. */

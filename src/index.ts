@@ -32,8 +32,14 @@ import { loadSettings, saveSettings } from "./settings.js";
 import type { HistorySettings, NotificationSettings } from "./settings.js";
 import { runHistoryRetention, maybeRunHistoryRetention } from "./core/retention.js";
 import { buildAnalytics } from "./core/analytics.js";
-import { getHistory } from "./db/history-repo.js";
-import { sendTestNotification } from "./notifications.js";
+import { getHistory, listRunningRecords } from "./db/history-repo.js";
+import {
+  findStuckMatrixClones,
+  maybeSendDigest,
+  notifyStuckMatrix,
+  sendDigestNow,
+  sendTestNotification,
+} from "./notifications.js";
 import {
   loadTaskDefinitions,
   saveTaskDefinition,
@@ -1110,6 +1116,8 @@ const resumeTaskExecute = wrapExecute<ResumeArgs>(async (args) => {
 
 /** Периодичность проверки автопродолжения задач (Спринт 19). */
 const PAUSED_UNTIL_CHECK_MS = 5 * 60 * 1000;
+/** Период проверки дайджеста и зависших матриц (Спринт 20). */
+const NOTIFICATION_CHECK_MS = 60 * 1000;
 
 /**
  * Спринт 19: автопродолжение задач, поставленных на паузу до даты.
@@ -1143,6 +1151,48 @@ async function resumeExpiredPauses(): Promise<void> {
         }`
       );
     }
+  }
+}
+
+/** Уже отправленные уведомления о зависших клонах (id записи истории). */
+const notifiedStuckRecords = new Set<number>();
+
+/**
+ * Детектор зависших матриц (Спринт 20): клоны, которые выполняются дольше
+ * `notifications.matrix.stuckAfterMinutes`. Каждый запуск уведомляется один раз.
+ */
+async function checkStuckMatrices(): Promise<void> {
+  const settings = await loadSettings();
+  const config = settings.notifications;
+  if (!config?.enabled) return;
+  const matrix = config.matrix;
+  if (!matrix?.enabled) return;
+  const threshold = matrix.stuckAfterMinutes;
+  if (!Number.isFinite(threshold) || threshold <= 0) return;
+
+  const running = listRunningRecords();
+  if (running.length === 0) {
+    notifiedStuckRecords.clear();
+    return;
+  }
+  // Снимаем отметки с завершившихся записей, чтобы Set не рос бесконечно.
+  const runningIds = new Set(running.map((record) => record.id));
+  for (const id of notifiedStuckRecords) {
+    if (!runningIds.has(id)) notifiedStuckRecords.delete(id);
+  }
+
+  const parentByClone = new Map<string, string>();
+  for (const definition of await loadTaskDefinitions()) {
+    if (definition.matrixParentId) {
+      parentByClone.set(definition.name.toLowerCase(), definition.matrixParentId);
+    }
+  }
+
+  const stuck = findStuckMatrixClones(running, parentByClone, new Date(), threshold);
+  for (const item of stuck) {
+    if (notifiedStuckRecords.has(item.id)) continue;
+    notifiedStuckRecords.add(item.id);
+    await notifyStuckMatrix(item);
   }
 }
 
@@ -1450,6 +1500,22 @@ export default Plugin.define({
       });
     }, PAUSED_UNTIL_CHECK_MS);
     pausedUntilTimer.unref?.();
+
+    // Спринт 20: дайджест и детектор зависших матриц. Проверяем сразу при
+    // старте и далее раз в минуту; таймер не держит процесс Node живым.
+    const notificationTimer = setInterval(() => {
+      void maybeSendDigest().catch(() => undefined);
+      void checkStuckMatrices().catch((err: any) => {
+        console.error(
+          `[windows-scheduler] Детектор зависших матриц: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
+    }, NOTIFICATION_CHECK_MS);
+    notificationTimer.unref?.();
+    void maybeSendDigest().catch(() => undefined);
+    void checkStuckMatrices().catch(() => undefined);
 
     // Инициализация блокировок: создаём директорию и очищаем зависшие lock-файлы (>24 ч).
     const lockManager = new LockManager(LOCK_DIR);
@@ -2197,6 +2263,10 @@ export default Plugin.define({
       test_notification: async () => {
         return await sendTestNotification();
       },
+      send_digest: async () => {
+        // Ручная отправка не сдвигает плановое расписание дайджеста.
+        return await sendDigestNow({ updateLastSentAt: false });
+      },
       get_templates: async () => {
         try {
           return { templates: await loadTemplates() };
@@ -2364,6 +2434,7 @@ export default Plugin.define({
 
     return () => {
       clearInterval(pausedUntilTimer);
+      clearInterval(notificationTimer);
       rpcRegistration.dispose();
       registration.dispose();
       void skillRegistration?.dispose();

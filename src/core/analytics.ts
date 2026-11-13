@@ -72,6 +72,15 @@ export interface ModelAnalyticsRow {
   costUsd: number;
 }
 
+/** Агрегат по тексту ошибки — топ ошибок для дайджеста (Спринт 20). */
+export interface ErrorAnalyticsRow {
+  /** Текст ошибки (обрезан до 160 символов). */
+  message: string;
+  count: number;
+  /** Последнее появление (ISO). */
+  lastAt: string;
+}
+
 export interface AnalyticsReport {
   generatedAt: string;
   /** Окно анализа в днях. */
@@ -91,6 +100,8 @@ export interface AnalyticsReport {
   topByCost: TaskAnalyticsRow[];
   matrices: MatrixAnalyticsRow[];
   byModel: ModelAnalyticsRow[];
+  /** Топ ошибок по частоте (Спринт 20). */
+  errors: ErrorAnalyticsRow[];
   sources: {
     historyRecords: number;
     /** Сколько записей попало в окно. */
@@ -171,6 +182,7 @@ export function buildAnalytics(
 
   const byTask = new Map<string, TaskAnalyticsRow>();
   const byModel = new Map<string, ModelAnalyticsRow>();
+  const byError = new Map<string, ErrorAnalyticsRow>();
   const cloneParent = new Map<string, string>();
   for (const task of options.tasks ?? []) {
     const parentId = task.matrixParentId?.trim();
@@ -253,6 +265,27 @@ export function buildAnalytics(
     modelRow.total += 1;
     modelRow.costUsd += cost;
     byModel.set(model, modelRow);
+
+    // Топ ошибок: группируем по тексту, чтобы дайджест показывал частые причины.
+    if (status !== "success" && status !== "partial") {
+      const message =
+        typeof record.error === "string" && record.error.trim()
+          ? record.error.trim().slice(0, 160)
+          : "(без текста)";
+      const errorRow = byError.get(message) ?? {
+        message,
+        count: 0,
+        lastAt: record.startedAt,
+      };
+      errorRow.count += 1;
+      if (
+        new Date(record.startedAt).getTime() >
+        new Date(errorRow.lastAt).getTime()
+      ) {
+        errorRow.lastAt = record.startedAt;
+      }
+      byError.set(message, errorRow);
+    }
   }
 
   const tasks = [...byTask.values()]
@@ -322,6 +355,9 @@ export function buildAnalytics(
     byModel: [...byModel.values()]
       .map((row) => ({ ...row, costUsd: Math.round(row.costUsd * 1e6) / 1e6 }))
       .sort((a, b) => b.costUsd - a.costUsd),
+    errors: [...byError.values()]
+      .sort((a, b) => b.count - a.count || a.message.localeCompare(b.message))
+      .slice(0, topLimit),
     sources: {
       historyRecords: records.length,
       recordsInWindow,

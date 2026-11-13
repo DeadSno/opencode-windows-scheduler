@@ -26,11 +26,31 @@ interface MatrixConfig {
   overrides?: Record<string, MatrixOverrideFields>
 }
 
-/** Настройки уведомлений (webhook). */
+/** Настройки уведомлений (webhook, шаблоны, фильтры, матрицы, дайджест — Спринт 20). */
 interface NotificationSettings {
   enabled: boolean
   onlyOnError: boolean
-  webhook?: { enabled: boolean; url: string }
+  webhook?: {
+    enabled: boolean
+    url: string
+    timeoutMs?: number
+    retryCount?: number
+    retryDelayMs?: number
+  }
+  templates?: { success: string; error: string }
+  filters?: { include: string[]; exclude: string[] }
+  matrix?: {
+    enabled: boolean
+    onPartial: boolean
+    onAllFailed: boolean
+    stuckAfterMinutes: number
+  }
+  digest?: {
+    enabled: boolean
+    frequency: "daily" | "weekly"
+    time: string
+    lastSentAt?: string | null
+  }
 }
 
 /** Настройки ретеншна истории (Спринт 18). 0 — соответствующее ограничение выключено. */
@@ -253,6 +273,23 @@ export default Plugin.define({
     const [webhookUrl, setWebhookUrl] = createSignal("")
     const [notificationsCollapsed, setNotificationsCollapsed] = createSignal(true)
     const [testNotificationBusy, setTestNotificationBusy] = createSignal(false)
+    // Спринт 20: webhook-ретраи, шаблоны, фильтры, матрицы и дайджест.
+    const [webhookTimeoutMs, setWebhookTimeoutMs] = createSignal(10000)
+    const [webhookRetryCount, setWebhookRetryCount] = createSignal(2)
+    const [webhookRetryDelayMs, setWebhookRetryDelayMs] = createSignal(1000)
+    const [templateSuccess, setTemplateSuccess] = createSignal("")
+    const [templateError, setTemplateError] = createSignal("")
+    const [filterInclude, setFilterInclude] = createSignal("")
+    const [filterExclude, setFilterExclude] = createSignal("")
+    const [matrixNotifyEnabled, setMatrixNotifyEnabled] = createSignal(true)
+    const [matrixNotifyPartial, setMatrixNotifyPartial] = createSignal(true)
+    const [matrixNotifyAllFailed, setMatrixNotifyAllFailed] = createSignal(true)
+    const [matrixStuckMinutes, setMatrixStuckMinutes] = createSignal(60)
+    const [digestEnabled, setDigestEnabled] = createSignal(false)
+    const [digestFrequency, setDigestFrequency] = createSignal<"daily" | "weekly">("daily")
+    const [digestTime, setDigestTime] = createSignal("09:00")
+    const [digestLastSentAt, setDigestLastSentAt] = createSignal<string | null>(null)
+    const [digestBusy, setDigestBusy] = createSignal(false)
 
     // Настройки ретеншна истории (Спринт 18): очистка старых записей.
     const [historyRetentionDays, setHistoryRetentionDays] = createSignal(30)
@@ -282,16 +319,35 @@ export default Plugin.define({
       }
     }
 
+    /** Разложить настройки уведомлений по сигналам формы (Спринт 20). */
+    function applyNotificationSettings(n: NotificationSettings | undefined) {
+      setNotificationsEnabled(Boolean(n?.enabled))
+      setOnlyOnError(n?.onlyOnError !== false)
+      setWebhookEnabled(Boolean(n?.webhook?.enabled))
+      setWebhookUrl(n?.webhook?.url ?? "")
+      setWebhookTimeoutMs(Number(n?.webhook?.timeoutMs ?? 10000))
+      setWebhookRetryCount(Number(n?.webhook?.retryCount ?? 2))
+      setWebhookRetryDelayMs(Number(n?.webhook?.retryDelayMs ?? 1000))
+      setTemplateSuccess(n?.templates?.success ?? "")
+      setTemplateError(n?.templates?.error ?? "")
+      setFilterInclude((n?.filters?.include ?? []).join(", "))
+      setFilterExclude((n?.filters?.exclude ?? []).join(", "))
+      setMatrixNotifyEnabled(n?.matrix?.enabled !== false)
+      setMatrixNotifyPartial(n?.matrix?.onPartial !== false)
+      setMatrixNotifyAllFailed(n?.matrix?.onAllFailed !== false)
+      setMatrixStuckMinutes(Number(n?.matrix?.stuckAfterMinutes ?? 60))
+      setDigestEnabled(Boolean(n?.digest?.enabled))
+      setDigestFrequency(n?.digest?.frequency === "weekly" ? "weekly" : "daily")
+      setDigestTime(n?.digest?.time ?? "09:00")
+      setDigestLastSentAt(n?.digest?.lastSentAt ?? null)
+    }
+
     async function loadSettingsGui() {
       try {
         const s = await rpc.get_settings({})
         setMaxConcurrent(s.maxConcurrent ?? 1)
         setWinterMode(Boolean(s.winterMode))
-        const n = s.notifications
-        setNotificationsEnabled(Boolean(n?.enabled))
-        setOnlyOnError(n?.onlyOnError !== false)
-        setWebhookEnabled(Boolean(n?.webhook?.enabled))
-        setWebhookUrl(n?.webhook?.url ?? "")
+        applyNotificationSettings(s.notifications)
         const h = s.history
         setHistoryRetentionDays(Number(h?.retentionDays ?? 30))
         setHistoryMaxRecords(Number(h?.maxRecords ?? 5000))
@@ -304,10 +360,44 @@ export default Plugin.define({
 
     /** Текущие настройки уведомлений из сигналов формы. */
     function currentNotificationSettings(): NotificationSettings {
+      const splitList = (value: string) =>
+        value
+          .split(",")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0)
       return {
         enabled: notificationsEnabled(),
         onlyOnError: onlyOnError(),
-        webhook: { enabled: webhookEnabled(), url: (webhookUrl() || "").trim() },
+        webhook: {
+          enabled: webhookEnabled(),
+          url: (webhookUrl() || "").trim(),
+          timeoutMs: Math.max(1000, Math.min(120000, Math.floor(Number(webhookTimeoutMs()) || 10000))),
+          retryCount: Math.max(0, Math.min(5, Math.floor(Number(webhookRetryCount()) || 0))),
+          retryDelayMs: Math.max(100, Math.min(60000, Math.floor(Number(webhookRetryDelayMs()) || 1000))),
+        },
+        templates: {
+          success: templateSuccess().trim(),
+          error: templateError().trim(),
+        },
+        filters: {
+          include: splitList(filterInclude()),
+          exclude: splitList(filterExclude()),
+        },
+        matrix: {
+          enabled: matrixNotifyEnabled(),
+          onPartial: matrixNotifyPartial(),
+          onAllFailed: matrixNotifyAllFailed(),
+          stuckAfterMinutes: Math.max(
+            0,
+            Math.min(10080, Math.floor(Number(matrixStuckMinutes()) || 0))
+          ),
+        },
+        digest: {
+          enabled: digestEnabled(),
+          frequency: digestFrequency(),
+          time: (digestTime() || "09:00").trim(),
+          lastSentAt: digestLastSentAt(),
+        },
       }
     }
 
@@ -332,11 +422,7 @@ export default Plugin.define({
         if (patch.maxConcurrent !== undefined) setMaxConcurrent(s.maxConcurrent)
         if (patch.winterMode !== undefined) setWinterMode(Boolean(s.winterMode))
         if (patch.notifications !== undefined) {
-          const n = s.notifications
-          setNotificationsEnabled(Boolean(n?.enabled))
-          setOnlyOnError(n?.onlyOnError !== false)
-          setWebhookEnabled(Boolean(n?.webhook?.enabled))
-          setWebhookUrl(n?.webhook?.url ?? "")
+          applyNotificationSettings(s.notifications)
         }
         if (patch.history !== undefined) {
           const h = s.history
@@ -413,6 +499,30 @@ export default Plugin.define({
         })
       } finally {
         setTestNotificationBusy(false)
+      }
+    }
+
+    /** Кнопка «📊 Отправить дайджест сейчас» (Спринт 20). */
+    async function handleSendDigest() {
+      setDigestBusy(true)
+      try {
+        // Сначала фиксируем настройки формы — дайджест читает settings.json.
+        await saveNotificationSettings()
+        const result = await rpc.send_digest({})
+        ctx.toast.show({
+          title: result.success ? "Дайджест отправлен" : "Дайджест не отправлен",
+          variant: result.success ? "success" : "error",
+          description: result.message,
+        })
+      } catch (err: any) {
+        console.error("RPC Error (send_digest):", err)
+        ctx.toast.show({
+          title: "Дайджест не отправлен",
+          variant: "error",
+          description: errorMessage(err),
+        })
+      } finally {
+        setDigestBusy(false)
       }
     }
 
@@ -1950,6 +2060,206 @@ export default Plugin.define({
                     <div style="font-size:11px;color:#8e8e93">
                       POST с JSON {"{ content, text }"} — совместимо с Discord и Slack.
                     </div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:#b0b0b0">
+                      <span>Таймаут, мс:</span>
+                      <input
+                        type="number"
+                        min="1000"
+                        max="120000"
+                        step="1000"
+                        value={webhookTimeoutMs()}
+                        disabled={!notificationsEnabled() || !webhookEnabled()}
+                        onInput={(e) => setWebhookTimeoutMs(Number(e.currentTarget.value) || 10000)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="width:80px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                      <span>повторов:</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="5"
+                        value={webhookRetryCount()}
+                        disabled={!notificationsEnabled() || !webhookEnabled()}
+                        onInput={(e) => setWebhookRetryCount(Number(e.currentTarget.value) || 0)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="width:56px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                      <span>пауза, мс:</span>
+                      <input
+                        type="number"
+                        min="100"
+                        max="60000"
+                        step="100"
+                        value={webhookRetryDelayMs()}
+                        disabled={!notificationsEnabled() || !webhookEnabled()}
+                        onInput={(e) => setWebhookRetryDelayMs(Number(e.currentTarget.value) || 1000)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="width:80px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                    </div>
+                    <div style="font-size:11px;color:#8e8e93">
+                      Повтор при сетевой ошибке, таймауте, 5xx и 429 (экспоненциальная пауза).
+                    </div>
+                  </div>
+
+                  {/* Фильтры по задачам (Спринт 20) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <div style="font-size:12px;color:#e0e0e0;font-weight:600">Фильтры по задачам</div>
+                    <input
+                      type="text"
+                      value={filterInclude() || ""}
+                      disabled={!notificationsEnabled()}
+                      onInput={(e) => setFilterInclude(e.currentTarget.value)}
+                      onChange={() => void saveNotificationSettings()}
+                      placeholder="Только эти задачи (через запятую, * — маска)"
+                      style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;opacity:${notificationsEnabled() ? 1 : 0.5}`}
+                    />
+                    <input
+                      type="text"
+                      value={filterExclude() || ""}
+                      disabled={!notificationsEnabled()}
+                      onInput={(e) => setFilterExclude(e.currentTarget.value)}
+                      onChange={() => void saveNotificationSettings()}
+                      placeholder="Исключить задачи (через запятую, * — маска)"
+                      style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;opacity:${notificationsEnabled() ? 1 : 0.5}`}
+                    />
+                    <div style="font-size:11px;color:#8e8e93">
+                      Пустой список «только» = все задачи. Исключения важнее включений.
+                    </div>
+                  </div>
+
+                  {/* Шаблоны сообщений (Спринт 20) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <div style="font-size:12px;color:#e0e0e0;font-weight:600">Шаблоны сообщений</div>
+                    <input
+                      type="text"
+                      value={templateSuccess() || ""}
+                      disabled={!notificationsEnabled()}
+                      onInput={(e) => setTemplateSuccess(e.currentTarget.value)}
+                      onChange={() => void saveNotificationSettings()}
+                      placeholder={'✅ Задача "{task}" выполнена ({duration})'}
+                      style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;outline:none;opacity:${notificationsEnabled() ? 1 : 0.5}`}
+                    />
+                    <input
+                      type="text"
+                      value={templateError() || ""}
+                      disabled={!notificationsEnabled()}
+                      onInput={(e) => setTemplateError(e.currentTarget.value)}
+                      onChange={() => void saveNotificationSettings()}
+                      placeholder={'❌ Задача "{task}" упала ({duration}){error}'}
+                      style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;outline:none;opacity:${notificationsEnabled() ? 1 : 0.5}`}
+                    />
+                    <div style="font-size:11px;color:#8e8e93">
+                      Плейсхолдеры: {"{task} {status} {duration} {error} {emoji}"}. Пусто = шаблон по умолчанию.
+                    </div>
+                  </div>
+
+                  {/* Уведомления о матрицах (Спринт 20) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <div style="font-size:12px;color:#e0e0e0;font-weight:600">Матрицы</div>
+                    <label style={`display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;opacity:${notificationsEnabled() ? 1 : 0.5}`}>
+                      <input
+                        type="checkbox"
+                        checked={matrixNotifyEnabled()}
+                        disabled={!notificationsEnabled()}
+                        onChange={(e) => {
+                          setMatrixNotifyEnabled(e.currentTarget.checked)
+                          void saveNotificationSettings()
+                        }}
+                        style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                      />
+                      Уведомлять о завершении матриц
+                    </label>
+                    <div style={`display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#b0b0b0;opacity:${notificationsEnabled() && matrixNotifyEnabled() ? 1 : 0.5}`}>
+                      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input
+                          type="checkbox"
+                          checked={matrixNotifyPartial()}
+                          disabled={!notificationsEnabled() || !matrixNotifyEnabled()}
+                          onChange={(e) => {
+                            setMatrixNotifyPartial(e.currentTarget.checked)
+                            void saveNotificationSettings()
+                          }}
+                          style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                        />
+                        partial
+                      </label>
+                      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input
+                          type="checkbox"
+                          checked={matrixNotifyAllFailed()}
+                          disabled={!notificationsEnabled() || !matrixNotifyEnabled()}
+                          onChange={(e) => {
+                            setMatrixNotifyAllFailed(e.currentTarget.checked)
+                            void saveNotificationSettings()
+                          }}
+                          style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                        />
+                        все упали
+                      </label>
+                      <span>зависший клон, мин:</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="10080"
+                        value={matrixStuckMinutes()}
+                        disabled={!notificationsEnabled() || !matrixNotifyEnabled()}
+                        onInput={(e) => setMatrixStuckMinutes(Number(e.currentTarget.value) || 0)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="width:72px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                    </div>
+                    <div style="font-size:11px;color:#8e8e93">
+                      Клон, выполняющийся дольше указанного времени, уведомляется один раз. 0 — выключить.
+                    </div>
+                  </div>
+
+                  {/* Дайджест (Спринт 20) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <div style="font-size:12px;color:#e0e0e0;font-weight:600">Дайджест</div>
+                    <label style={`display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;opacity:${notificationsEnabled() ? 1 : 0.5}`}>
+                      <input
+                        type="checkbox"
+                        checked={digestEnabled()}
+                        disabled={!notificationsEnabled()}
+                        onChange={(e) => {
+                          setDigestEnabled(e.currentTarget.checked)
+                          void saveNotificationSettings()
+                        }}
+                        style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                      />
+                      Отправлять дайджест
+                    </label>
+                    <div style={`display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#b0b0b0;opacity:${notificationsEnabled() && digestEnabled() ? 1 : 0.5}`}>
+                      <select
+                        value={digestFrequency()}
+                        disabled={!notificationsEnabled() || !digestEnabled()}
+                        onChange={(e) => {
+                          setDigestFrequency(e.currentTarget.value === "weekly" ? "weekly" : "daily")
+                          void saveNotificationSettings()
+                        }}
+                        style="padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      >
+                        <option value="daily">ежедневно</option>
+                        <option value="weekly">еженедельно (Пн)</option>
+                      </select>
+                      <input
+                        type="time"
+                        value={digestTime()}
+                        disabled={!notificationsEnabled() || !digestEnabled()}
+                        onInput={(e) => setDigestTime(e.currentTarget.value)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                      <span style="font-size:11px;color:#8e8e93">
+                        {digestLastSentAt()
+                          ? `последняя отправка: ${new Date(digestLastSentAt()!).toLocaleString()}`
+                          : "ещё не отправлялся"}
+                      </span>
+                    </div>
+                    <div style="font-size:11px;color:#8e8e93">
+                      Запуски, success rate, стоимость и топ ошибок за сутки/неделю.
+                    </div>
                   </div>
 
                   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1959,6 +2269,13 @@ export default Plugin.define({
                       style={`padding:6px 12px;background:#007acc;color:white;border:none;border-radius:6px;cursor:${testNotificationBusy() || !webhookEnabled() ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${testNotificationBusy() || !webhookEnabled() ? 0.6 : 1}`}
                     >
                       {testNotificationBusy() ? "Отправка..." : "🧪 Тестовое уведомление"}
+                    </button>
+                    <button
+                      onClick={() => void handleSendDigest()}
+                      disabled={digestBusy() || !webhookEnabled()}
+                      style={`padding:6px 12px;background:#2d7d46;color:white;border:none;border-radius:6px;cursor:${digestBusy() || !webhookEnabled() ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${digestBusy() || !webhookEnabled() ? 0.6 : 1}`}
+                    >
+                      {digestBusy() ? "Отправка..." : "📊 Отправить дайджест сейчас"}
                     </button>
                     <span style="font-size:11px;color:#8e8e93">
                       ntfy.sh не используется — только webhook.

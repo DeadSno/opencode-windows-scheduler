@@ -11,6 +11,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Расширенный cron: `@every 15m|2h|1d`, `L` (последний день месяца), `d#n` (N-й день недели, напр. `FRI#3`), имена месяцев/дней, диапазоны и списки со шагами.
 - Пауза до даты `pausedUntil` — `pause_task(name, until?)` сохраняет ISO-момент; авто-возобновление при старте плагина и по таймеру каждые 5 мин, `resume_task` снимает паузу досрочно.
 - `test-schedule-v2.mjs` (50 проверок: парсер, nextRun/prevRun, DST, окна, CLI-шлюз) — добавлен в `npm test`.
+- **Уведомления v2:** ретраи webhook (`timeoutMs`, `retryCount`, `retryDelayMs`, backoff до 30 с на сеть/таймаут/5xx/429), шаблоны сообщений с плейсхолдерами и фильтры задач (`include`/`exclude`, маски `*`).
+- Уведомления матриц (успех, `partial`, «все упали») и детектор зависших клонов (`matrix.stuckAfterMinutes`, одно уведомление на запуск).
+- Дайджест (ежедневный/еженедельный): запуски, success rate, стоимость, токены, топ ошибок; RPC `send_digest`, кнопка «📊 Отправить дайджест сейчас», GUI-настройки таймаута/шаблонов/фильтров/матриц/дайджеста. ntfy.sh не реализован (исключён заданием).
+- `test-notifications-v2.mjs` (44 проверки) — добавлен в `npm test`.
 
 ### Planned
 

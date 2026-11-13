@@ -8,6 +8,55 @@ export interface WebhookNotificationSettings {
   enabled: boolean;
   /** URL вебхука. */
   url: string;
+  /** Таймаут запроса в мс (1000..120000). */
+  timeoutMs: number;
+  /** Сколько раз повторить при сетевой ошибке / 5xx / 429 (0..5). */
+  retryCount: number;
+  /** Базовая задержка backoff в мс; каждая следующая попытка ждёт вдвое дольше. */
+  retryDelayMs: number;
+}
+
+/** Настраиваемые шаблоны сообщений о завершении задачи. */
+export interface NotificationTemplates {
+  /** Шаблон успеха. Плейсхолдеры: {task} {status} {duration} {error} {emoji}. */
+  success: string;
+  /** Шаблон ошибки. {error} разворачивается в «: текст» или пустую строку. */
+  error: string;
+}
+
+/** Фильтры по задачам: include имеет приоритет, exclude сильнее include. */
+export interface NotificationFilters {
+  /** Уведомлять только эти задачи (пусто — все). Поддерживает `*`. */
+  include: string[];
+  /** Никогда не уведомлять эти задачи. Поддерживает `*`. */
+  exclude: string[];
+}
+
+/** Уведомления о матрицах (Спринт 20). */
+export interface MatrixNotificationSettings {
+  /** Включены ли уведомления о матрицах. */
+  enabled: boolean;
+  /** Сообщать о partial (часть клонов упала). */
+  onPartial: boolean;
+  /** Сообщать, когда упали все клоны. */
+  onAllFailed: boolean;
+  /** Порог «матрица зависла» в минутах (0 — детектор выключен). */
+  stuckAfterMinutes: number;
+}
+
+/** Периодичность дайджеста. */
+export type DigestFrequency = "daily" | "weekly";
+
+/** Дайджест по истории запусков (Спринт 20). */
+export interface DigestSettings {
+  /** Включён ли дайджест. */
+  enabled: boolean;
+  /** Ежедневно или еженедельно (по понедельникам). */
+  frequency: DigestFrequency;
+  /** Время отправки в формате HH:MM (локальное время сервера). */
+  time: string;
+  /** ISO-момент последней отправки — дедуп между перезапусками плагина. */
+  lastSentAt: string | null;
 }
 
 /**
@@ -23,6 +72,14 @@ export interface NotificationSettings {
   onlyOnError: boolean;
   /** Webhook-канал. */
   webhook?: WebhookNotificationSettings;
+  /** Шаблоны сообщений. */
+  templates?: NotificationTemplates;
+  /** Фильтры по задачам. */
+  filters?: NotificationFilters;
+  /** Уведомления о матрицах. */
+  matrix?: MatrixNotificationSettings;
+  /** Периодический дайджест. */
+  digest?: DigestSettings;
 }
 
 /**
@@ -63,6 +120,12 @@ export const DEFAULT_MAX_CONCURRENT = 1;
 export const DEFAULT_WINTER_MODE = false;
 export const DEFAULT_RETENTION_DAYS = 30;
 export const DEFAULT_MAX_RECORDS = 5000;
+
+/** Уведомления (Спринт 20): таймаут webhook, повторы и порог «зависшей» матрицы. */
+export const DEFAULT_WEBHOOK_TIMEOUT_MS = 10_000;
+export const DEFAULT_WEBHOOK_RETRY_COUNT = 2;
+export const DEFAULT_WEBHOOK_RETRY_DELAY_MS = 1_000;
+export const DEFAULT_STUCK_AFTER_MINUTES = 60;
 
 /** Ретеншн по умолчанию: 30 дней и не больше 5000 записей. */
 export function defaultHistorySettings(): HistorySettings {
@@ -111,7 +174,30 @@ export function defaultNotifications(): NotificationSettings {
   return {
     enabled: false,
     onlyOnError: true,
-    webhook: { enabled: false, url: "" },
+    webhook: {
+      enabled: false,
+      url: "",
+      timeoutMs: DEFAULT_WEBHOOK_TIMEOUT_MS,
+      retryCount: DEFAULT_WEBHOOK_RETRY_COUNT,
+      retryDelayMs: DEFAULT_WEBHOOK_RETRY_DELAY_MS,
+    },
+    templates: {
+      success: '✅ Задача "{task}" выполнена ({duration})',
+      error: '❌ Задача "{task}" упала ({duration}){error}',
+    },
+    filters: { include: [], exclude: [] },
+    matrix: {
+      enabled: true,
+      onPartial: true,
+      onAllFailed: true,
+      stuckAfterMinutes: DEFAULT_STUCK_AFTER_MINUTES,
+    },
+    digest: {
+      enabled: false,
+      frequency: "daily",
+      time: "09:00",
+      lastSentAt: null,
+    },
   };
 }
 
@@ -131,24 +217,82 @@ function normalizeWinterMode(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+/** Приводит значение к конечному целому в диапазоне [min, max]. */
+function normalizeIntInRange(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+/** Приводит время HH:MM к безопасному виду. */
+function normalizeDailyTime(value: unknown, fallback: string): string {
+  if (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value.trim())) {
+    return value.trim();
+  }
+  return fallback;
+}
+
+/** Список имён задач: массив строк, обрезанных и без пустых значений. */
+function normalizeNameList(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 /** Приводит настройки уведомлений к безопасному виду. */
 function normalizeNotifications(
   value: unknown,
   fallback: NotificationSettings
 ): NotificationSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  const fallbackWebhook = fallback.webhook ?? defaultNotifications().webhook!;
+  const fallbackTemplates = fallback.templates ?? defaultNotifications().templates!;
+  const fallbackFilters = fallback.filters ?? { include: [], exclude: [] };
+  const fallbackMatrix = fallback.matrix ?? defaultNotifications().matrix!;
+  const fallbackDigest = fallback.digest ?? defaultNotifications().digest!;
+
+  const raw = asRecord(value);
+  if (!raw) {
     return {
       ...fallback,
-      webhook: fallback.webhook ? { ...fallback.webhook } : { enabled: false, url: "" },
+      webhook: { ...fallbackWebhook },
+      templates: { ...fallbackTemplates },
+      filters: {
+        include: [...fallbackFilters.include],
+        exclude: [...fallbackFilters.exclude],
+      },
+      matrix: { ...fallbackMatrix },
+      digest: { ...fallbackDigest },
     };
   }
 
-  const raw = value as Partial<NotificationSettings> & { webhook?: unknown };
-  const rawWebhook =
-    raw.webhook && typeof raw.webhook === "object" && !Array.isArray(raw.webhook)
-      ? (raw.webhook as Partial<WebhookNotificationSettings>)
-      : undefined;
-  const fallbackWebhook = fallback.webhook ?? { enabled: false, url: "" };
+  const rawWebhook = asRecord(raw.webhook);
+  const rawTemplates = asRecord(raw.templates);
+  const rawFilters = asRecord(raw.filters);
+  const rawMatrix = asRecord(raw.matrix);
+  const rawDigest = asRecord(raw.digest);
+
+  const frequency: DigestFrequency =
+    rawDigest?.frequency === "weekly" || rawDigest?.frequency === "daily"
+      ? rawDigest.frequency
+      : fallbackDigest.frequency;
+
+  const lastSentAt =
+    typeof rawDigest?.lastSentAt === "string" && rawDigest.lastSentAt.trim()
+      ? rawDigest.lastSentAt.trim()
+      : null;
 
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
@@ -163,6 +307,67 @@ function normalizeNotifications(
         typeof rawWebhook?.url === "string"
           ? rawWebhook.url.trim()
           : fallbackWebhook.url,
+      timeoutMs: normalizeIntInRange(
+        rawWebhook?.timeoutMs,
+        fallbackWebhook.timeoutMs,
+        1_000,
+        120_000
+      ),
+      retryCount: normalizeIntInRange(
+        rawWebhook?.retryCount,
+        fallbackWebhook.retryCount,
+        0,
+        5
+      ),
+      retryDelayMs: normalizeIntInRange(
+        rawWebhook?.retryDelayMs,
+        fallbackWebhook.retryDelayMs,
+        100,
+        60_000
+      ),
+    },
+    templates: {
+      success:
+        typeof rawTemplates?.success === "string" && rawTemplates.success.trim()
+          ? rawTemplates.success
+          : fallbackTemplates.success,
+      error:
+        typeof rawTemplates?.error === "string" && rawTemplates.error.trim()
+          ? rawTemplates.error
+          : fallbackTemplates.error,
+    },
+    filters: {
+      include: normalizeNameList(rawFilters?.include, fallbackFilters.include),
+      exclude: normalizeNameList(rawFilters?.exclude, fallbackFilters.exclude),
+    },
+    matrix: {
+      enabled:
+        typeof rawMatrix?.enabled === "boolean"
+          ? rawMatrix.enabled
+          : fallbackMatrix.enabled,
+      onPartial:
+        typeof rawMatrix?.onPartial === "boolean"
+          ? rawMatrix.onPartial
+          : fallbackMatrix.onPartial,
+      onAllFailed:
+        typeof rawMatrix?.onAllFailed === "boolean"
+          ? rawMatrix.onAllFailed
+          : fallbackMatrix.onAllFailed,
+      stuckAfterMinutes: normalizeIntInRange(
+        rawMatrix?.stuckAfterMinutes,
+        fallbackMatrix.stuckAfterMinutes,
+        0,
+        10_080
+      ),
+    },
+    digest: {
+      enabled:
+        typeof rawDigest?.enabled === "boolean"
+          ? rawDigest.enabled
+          : fallbackDigest.enabled,
+      frequency,
+      time: normalizeDailyTime(rawDigest?.time, fallbackDigest.time),
+      lastSentAt,
     },
   };
 }

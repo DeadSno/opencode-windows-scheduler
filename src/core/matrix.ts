@@ -18,6 +18,7 @@ import {
   saveTask,
 } from "../db/tasks-repo.js";
 import { getHistory, recordRun } from "../db/history-repo.js";
+import { notifyMatrixCompletion } from "../notifications.js";
 import { getWorkspace } from "../workspaces.js";
 import { createSchedulerBackend } from "./scheduler/index.js";
 
@@ -879,6 +880,15 @@ export async function finalizeMatrixIfComplete(
       "skipped",
       "skipped"
     );
+    // Спринт 20: уведомление о завершении матрицы (partial / все упали / успех).
+    void notifyMatrixCompletion({
+      parentName: parent.name,
+      status: finalStatus,
+      total: aggregate.totalCount,
+      success: aggregate.successCount,
+      error: aggregate.errorCount,
+      message: aggregate.message,
+    });
   } catch (err: any) {
     console.log(
       `[matrix] ${parent.name}: не удалось записать агрегат: ${

@@ -267,6 +267,25 @@ matrix combinations are rejected explicitly.
 Webhook notifications on run completion, configurable in settings and testable with
 `test_notification`.
 
+- **Delivery:** per-task completion (success/error/timeout) through a Discord/Slack
+  compatible webhook (`{ content, text }`). `webhook.timeoutMs` (default 10 000),
+  `webhook.retryCount` (default 2) and `webhook.retryDelayMs` (default 1000) control
+  the request; network errors, timeouts, HTTP 5xx and 429 are retried with exponential
+  backoff (capped at 30 s), other 4xx are not.
+- **Templates:** `templates.success` and `templates.error` accept placeholders
+  `{task}`, `{status}`, `{duration}`, `{error}`, `{emoji}`.
+- **Filters:** `filters.include` / `filters.exclude` are task-name patterns with `*`
+  wildcards; an empty include list means all tasks, exclude wins.
+- **Matrix notifications:** on family completion — success, `partial` (`onPartial`)
+  and all clones failed (`onAllFailed`). A stuck detector reports clones running
+  longer than `matrix.stuckAfterMinutes` (default 60, `0` disables) once per run.
+- **Digest:** `digest.enabled` sends a daily (`frequency: "daily"`, at `digest.time`)
+  or weekly (Mondays, catch-up afterwards) summary: runs, success rate, cost, tokens
+  and top errors. Also available as the `send_digest` RPC and the GUI's
+  «📊 Отправить дайджест сейчас» button (manual sends do not move the schedule).
+- **ntfy.sh is intentionally not implemented** (excluded by the assignment); the
+  network channel is the webhook, plus GUI toasts for manual runs.
+
 ### Crash recovery
 
 Runs left in `running` after a crash are marked `error` on the next plugin start, so
