@@ -7,6 +7,8 @@ matter in practice.
 - [Execution policy](#execution-policy)
 - [Orchestration](#orchestration)
 - [Multi-repository workspaces](#multi-repository-workspaces)
+- [Profiles (multi-project)](#profiles-multi-project)
+- [Workspace environment variables](#workspace-environment-variables)
 - [Observability](#observability)
 - [Management](#management)
 - [Agent interface](#agent-interface)
@@ -204,6 +206,42 @@ A workspace is a named directory: id, name, path, optional git remote and color.
 Use `workspaceId` instead of `workingDirectory` to run a task in a workspace. Paths are
 validated on add/update/import, and the dashboard groups tasks and runs by workspace.
 Workspaces are the unit that matrix builds fan out to.
+
+## Profiles (multi-project, Спринт 21)
+
+Profiles let you run several independent scheduler installations inside one plugin,
+each with its own SQLite database, settings, logs, wrappers and dashboard port.
+This is useful for separating projects, clients or environments (e.g. `default` and
+`work`) without them seeing each other's data.
+
+- Profile `default` uses the plugin's base directory (no migration, behaves exactly
+  as before Sprint 21). Named profiles live in `<base>/profiles/<name>`.
+- Profile selection order: `OPENCODE_SCHEDULER_PROFILE` env var → file `active-profile`
+  in the base directory → `default`. Switching profiles writes the marker and requires
+  an OpenCode restart because plugin directories are resolved at module load time.
+- Dashboard port per profile: `OPENCODE_SCHEDULER_PORT` env var → port from
+  `profile.json` → server default (3782, then 4782/5782 fallback).
+- RPC: `get_profiles` lists profiles with dirs, ports and the active flag;
+  `set_profile` switches the active profile (restart hint); `create_profile` /
+  `delete_profile` manage named profiles (`default` cannot be deleted).
+
+### Workspace environment variables (Спринт 21)
+
+Each workspace can carry env variables that are injected into every task run in that
+workspace:
+
+- `env` — explicit `KEY=VALUE` pairs stored in SQLite as JSON;
+- `envFile` — optional path to a `.env` file whose variables are loaded first, then
+  explicit pairs override them;
+- File format: `KEY=value` lines, `#` comments, blank lines, leading `export `,
+  values in matching quotes are unquoted;
+- Key validation: `^[A-Za-z_][A-Za-z0-9_]*$`, max 100 pairs per workspace;
+- Delivery: at task create/update the plugin writes `<PLUGIN_DIR>/env/<sanitized>.env`
+  with real values (mode `0600` on POSIX) and passes it to the wrapper
+  (Windows: `-EnvFile "<path>"`; POSIX: `set -a; . "$ENV_FILE"; set +a` before the
+  `opencode run` invocation);
+- Secret masking: keys matching `/(TOKEN|SECRET|PASS|PASSWORD|KEY|CREDENTIAL|AUTH)/i`
+  are shown as `***` in logs and masked API responses — values never leak into logs.
 
 ## Observability
 

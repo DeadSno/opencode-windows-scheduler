@@ -151,7 +151,20 @@ interface Workspace {
   gitRemote?: string | null
   gitBranch?: string | null
   color?: string | null
+  /** Env-переменные workspace (Спринт 21); секреты приходят замаскированными. */
+  env?: Record<string, string> | null
+  /** Путь к .env-файлу workspace (Спринт 21). */
+  envFile?: string | null
   createdAt: string
+}
+
+/** Описание профиля плагина (Спринт 21). */
+interface ProfileInfo {
+  name: string
+  dir: string
+  port: number | null
+  isDefault: boolean
+  active: boolean
 }
 
 function statusColor(status: JobStatus): string {
@@ -224,6 +237,12 @@ export default Plugin.define({
     const [workspaceFilter, setWorkspaceFilter] = createSignal("all")
     const [workspaceBusy, setWorkspaceBusy] = createSignal(false)
     const [workspaceId, setWorkspaceId] = createSignal("")
+    // Профили плагина (Спринт 21): отдельные БД/настройки/порт дашборда.
+    const [profiles, setProfiles] = createSignal<ProfileInfo[]>([])
+    const [profileCurrent, setProfileCurrent] = createSignal("default")
+    const [profilePinned, setProfilePinned] = createSignal(false)
+    const [profilesOpen, setProfilesOpen] = createSignal(false)
+    const [profileBusy, setProfileBusy] = createSignal(false)
     const [logs, setLogs] = createSignal("")
     const [logsTask, setLogsTask] = createSignal<string | null>(null)
     const [busy, setBusy] = createSignal(false)
@@ -791,6 +810,140 @@ export default Plugin.define({
 
     /** Активный workspace выбранной задачи (для dry-run подсказки). */
     const selectedWorkspace = () => workspaces().find((w) => w.id === workspaceId())
+
+    // ---- Профили (Спринт 21) ----
+
+    async function loadProfilesGui() {
+      try {
+        const result = await rpc.get_profiles({})
+        const list = Array.isArray(result?.profiles) ? (result.profiles as ProfileInfo[]) : []
+        setProfiles(list)
+        if (result?.current) setProfileCurrent(result.current)
+        setProfilePinned(Boolean(result?.pinnedByEnv))
+      } catch (err: any) {
+        console.error("RPC Error (get_profiles):", err)
+      }
+    }
+
+    async function handleSwitchProfile(name: string) {
+      if (!name || name === profileCurrent()) return
+      setProfileBusy(true)
+      try {
+        const result = await rpc.set_profile({ name })
+        if (!result.success) {
+          ctx.toast.show({ title: "Не удалось переключить профиль", variant: "error", description: result.message ?? "Неизвестная ошибка" })
+          return
+        }
+        setProfileCurrent(result.current ?? name)
+        ctx.toast.show({ title: "Профиль переключён", variant: "success", description: result.message })
+        await loadProfilesGui()
+      } catch (err: any) {
+        console.error("RPC Error (set_profile):", err)
+        ctx.toast.show({ title: "Ошибка переключения профиля", variant: "error", description: shortError(errorMessage(err)) })
+      } finally {
+        setProfileBusy(false)
+      }
+    }
+
+    async function handleCreateProfile() {
+      const name = (window.prompt("Имя нового профиля (латиница, цифры, - и _)", "") ?? "").trim()
+      if (!name) return
+      setProfileBusy(true)
+      try {
+        const result = await rpc.create_profile({ name })
+        if (!result.success) {
+          ctx.toast.show({ title: "Не удалось создать профиль", variant: "error", description: result.message ?? "Неизвестная ошибка" })
+          return
+        }
+        await loadProfilesGui()
+        ctx.toast.show({ title: "Профиль создан", variant: "success", description: result.message })
+      } catch (err: any) {
+        console.error("RPC Error (create_profile):", err)
+        ctx.toast.show({ title: "Ошибка создания профиля", variant: "error", description: shortError(errorMessage(err)) })
+      } finally {
+        setProfileBusy(false)
+      }
+    }
+
+    async function handleDeleteProfile(name: string) {
+      if (!name || name === "default") return
+      if (!window.confirm(`Удалить профиль "${name}" вместе с его БД, настройками и логами?`)) return
+      setProfileBusy(true)
+      try {
+        const result = await rpc.delete_profile({ name })
+        if (!result.success) {
+          ctx.toast.show({ title: "Не удалось удалить профиль", variant: "error", description: result.message ?? "Неизвестная ошибка" })
+          return
+        }
+        await loadProfilesGui()
+        ctx.toast.show({ title: "Профиль удалён", variant: "success" })
+      } catch (err: any) {
+        console.error("RPC Error (delete_profile):", err)
+        ctx.toast.show({ title: "Ошибка удаления профиля", variant: "error", description: shortError(errorMessage(err)) })
+      } finally {
+        setProfileBusy(false)
+      }
+    }
+
+    // ---- Env-переменные workspace (Спринт 21) ----
+
+    /** Строки `KEY=VALUE` из объекта env (для textarea). */
+    function envToText(env?: Record<string, string> | null): string {
+      if (!env) return ""
+      return Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n")
+    }
+
+    /** Разбирает textarea `KEY=VALUE`: возвращает пары или null при ошибке. */
+    function parseEnvText(text: string): Record<string, string> | null {
+      const result: Record<string, string> = {}
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim()
+        if (!line || line.startsWith("#")) continue
+        const eq = line.indexOf("=")
+        if (eq <= 0) return null
+        const key = line.slice(0, eq).trim()
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null
+        result[key] = line.slice(eq + 1).trim()
+      }
+      return result
+    }
+
+    async function handleEditWorkspaceEnv(workspace: Workspace) {
+      const envText = window.prompt(
+        "Env-переменные workspace, по одной в строке KEY=VALUE\n(пустое поле — очистить)",
+        envToText(workspace.env)
+      )
+      if (envText === null) return
+      const env = parseEnvText(envText)
+      if (!env) {
+        ctx.toast.show({ title: "Неверный формат env", variant: "error", description: "Нужны строки KEY=VALUE, имя — латиница/цифры/_" })
+        return
+      }
+      const envFile = window.prompt(
+        "Путь к .env-файлу workspace (необязательно, пусто — без файла)",
+        workspace.envFile ?? ""
+      )
+      if (envFile === null) return
+      setWorkspaceBusy(true)
+      try {
+        const result = await rpc.update_workspace({
+          id: workspace.id,
+          env: Object.keys(env).length ? env : null,
+          envFile: envFile.trim() || null,
+        })
+        if (!result.success) {
+          ctx.toast.show({ title: "Не удалось сохранить env", variant: "error", description: result.error ?? "Неизвестная ошибка" })
+          return
+        }
+        await loadWorkspacesGui()
+        ctx.toast.show({ title: "Env-переменные сохранены", variant: "success", description: "Секреты маскируются в логах" })
+      } catch (err: any) {
+        console.error("RPC Error (update_workspace env):", err)
+        ctx.toast.show({ title: "Ошибка сохранения env", variant: "error", description: shortError(errorMessage(err)) })
+      } finally {
+        setWorkspaceBusy(false)
+      }
+    }
 
     async function handleAddWorkspace() {
       const workspacePath = (window.prompt("Путь к git-репозиторию (workspace)", "") ?? "").trim()
@@ -1497,6 +1650,7 @@ export default Plugin.define({
     // Автообновление списка задач каждые 5 секунд
     loadJobs()
     loadWorkspacesGui()
+    loadProfilesGui()
     loadSettingsGui()
     loadPlatformGui()
     loadTemplatesGui()
@@ -1919,6 +2073,15 @@ export default Plugin.define({
                   <option value="none">Без workspace</option>
                 </select>
                 <button
+                  onClick={() => setProfilesOpen((v) => !v)}
+                  title={profilePinned()
+                    ? "Профиль задан переменной окружения OPENCODE_SCHEDULER_PROFILE — переключение в GUI недоступно"
+                    : "Профили: отдельные БД, настройки и порт дашборда"}
+                  style={`display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;cursor:pointer;font-size:12px;user-select:none;white-space:nowrap;border:1px solid ${profilesOpen() ? "#bf5af2" : "#333"};background:${profilesOpen() ? "rgba(191,90,242,0.12)" : "#1e1e1e"};color:${profilesOpen() ? "#bf5af2" : "#e0e0e0"}`}
+                >
+                  👤 {profileCurrent()}{profilePinned() ? " 🔒" : ""}
+                </button>
+                <button
                   onClick={async () => {
                     // Открываем окно сразу (внутри клика), чтобы не сработал блокировщик попапов.
                     const win = window.open("", "_blank");
@@ -1956,6 +2119,62 @@ export default Plugin.define({
                 </label>
               </div>
             </div>
+
+            {profilesOpen() && (
+              <div style="background:#1e1e1e;border:1px solid #333;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                  <div style="font-size:12px;font-weight:600;color:#e0e0e0">👤 Профили</div>
+                  <button
+                    onClick={() => void handleCreateProfile()}
+                    disabled={profileBusy()}
+                    style={`padding:4px 10px;border-radius:6px;border:1px solid #333;background:#262626;color:#e0e0e0;font-size:11px;cursor:${profileBusy() ? "not-allowed" : "pointer"}`}
+                  >
+                    + Создать
+                  </button>
+                </div>
+                {profilePinned() && (
+                  <div style="font-size:11px;color:#ffd60a">
+                    Профиль задан переменной OPENCODE_SCHEDULER_PROFILE. Переключение в GUI недоступно.
+                  </div>
+                )}
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  {profiles().map((profile) => (
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px">
+                      <span style={`font-weight:${profile.active ? 700 : 400};color:${profile.active ? "#bf5af2" : "#e0e0e0"}`}>
+                        {profile.name}{profile.isDefault ? " (по умолчанию)" : ""}
+                      </span>
+                      <span style="font-size:11px;color:#8e8e93">
+                        {profile.port ? `порт ${profile.port}` : "порт по умолчанию"}
+                      </span>
+                      <span style="font-size:11px;color:#8e8e93;overflow:hidden;text-overflow:ellipsis;max-width:340px" title={profile.dir}>{profile.dir}</span>
+                      {profile.active ? (
+                        <span style="font-size:11px;color:#34c759">активен</span>
+                      ) : (
+                        <button
+                          onClick={() => void handleSwitchProfile(profile.name)}
+                          disabled={profileBusy() || profilePinned()}
+                          style={`padding:2px 8px;border-radius:6px;border:1px solid #333;background:#262626;color:#e0e0e0;font-size:11px;cursor:${profileBusy() || profilePinned() ? "not-allowed" : "pointer"};opacity:${profilePinned() ? 0.5 : 1}`}
+                        >
+                          Переключить
+                        </button>
+                      )}
+                      {!profile.isDefault && !profile.active && (
+                        <button
+                          onClick={() => void handleDeleteProfile(profile.name)}
+                          disabled={profileBusy()}
+                          style={`padding:2px 8px;border-radius:6px;border:1px solid rgba(255,59,48,0.4);background:rgba(255,59,48,0.12);color:#ff3b30;font-size:11px;cursor:${profileBusy() ? "not-allowed" : "pointer"}`}
+                        >
+                          Удалить
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style="font-size:11px;color:#8e8e93">
+                  У каждого профиля своя БД, настройки, логи и порт дашборда. После переключения перезапустите OpenCode.
+                </div>
+              </div>
+            )}
 
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
               <button
@@ -2389,8 +2608,17 @@ export default Plugin.define({
                           <span style="font-size:10px;color:#a0a0a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
                             git: {workspace.gitBranch || "—"} · {workspace.gitRemote || "remote не задан"}
                           </span>
+                          <span style="font-size:10px;color:#8e8e93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                            env: {workspace.env ? `${Object.keys(workspace.env).length} перем.` : "—"}{workspace.envFile ? " · .env-файл" : ""}
+                          </span>
                         </div>
                         <div style="display:flex;gap:4px;flex-shrink:0">
+                          <button
+                            onClick={() => void handleEditWorkspaceEnv(workspace)}
+                            disabled={workspaceBusy()}
+                            title="Env-переменные workspace (секреты маскируются в логах)"
+                            style="background:transparent;border:none;color:#a0a0a6;cursor:pointer;font-size:14px;padding:2px"
+                          >🔑</button>
                           <button
                             onClick={() => void handleEditWorkspace(workspace)}
                             disabled={workspaceBusy()}

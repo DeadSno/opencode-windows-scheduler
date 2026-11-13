@@ -45,7 +45,8 @@ export const WRAPPER_SCRIPT = `param(
     [string]$RecorderFile,
     [string]$QualityGate,
     [string]$BeforeScript,
-    [string]$AfterScript
+    [string]$AfterScript,
+    [string]$EnvFile
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -290,6 +291,21 @@ try {
     if (-not $script:skipMainTask) {
     $prompt = Get-Content -Path $PromptFile -Raw -Encoding UTF8
 
+    # Спринт 21: env-переменные workspace. Файл пишет плагин, значения не логируются.
+    if ($EnvFile -and (Test-Path -LiteralPath $EnvFile)) {
+        try {
+            Get-Content -Path $EnvFile -Encoding UTF8 | ForEach-Object {
+                $line = $_.Trim()
+                if ($line -and -not $line.StartsWith("#") -and $line -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
+                    Set-Item -Path ("env:" + $matches[1]) -Value $matches[2]
+                }
+            }
+            Write-Log "[windows-scheduler] Переменные окружения workspace загружены."
+        } catch {
+            Write-Log "[windows-scheduler] Не удалось загрузить env-файл workspace: $($_.Exception.Message)"
+        }
+    }
+
     # Получаем путь к скрипту opencode (.ps1 или .cmd)
     $opencodeCmd = Get-Command opencode | Select-Object -ExpandProperty Source
 
@@ -487,7 +503,8 @@ export async function writeWrapperCmd(
   workspaceName?: string,
   allowedTools?: string[],
   deniedTools?: string[],
-  scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string }
+  scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string },
+  envFile?: string
 ): Promise<string> {
   await fs.mkdir(WRAPPER_DIR, { recursive: true });
   const cmdPath = path.join(WRAPPER_DIR, `run-${sanitizedName}.cmd`);
@@ -558,6 +575,14 @@ export async function writeWrapperCmd(
     const safe = script?.replace(/[\r\n]+/g, " ").replace(/"/g, "'").trim();
     if (safe) {
       psArgs.push(`${flag} "${safe}"`);
+    }
+  }
+
+  // Спринт 21: env-файл workspace (пары KEY=VALUE). Значения не логируются.
+  if (envFile?.trim()) {
+    const safeEnvFile = envFile.replace(/[\r\n"]+/g, "").trim();
+    if (safeEnvFile) {
+      psArgs.push(`-EnvFile "${safeEnvFile}"`);
     }
   }
 

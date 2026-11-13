@@ -153,7 +153,7 @@ Job wrappers run `opencode run` in the task working directory, so project MCP se
 npm install
 npm run build        # tsc
 npm run build:gui    # vite
-npm test             # 15 test suites, 400+ checks
+npm test             # 17 test suites, 500+ checks
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.

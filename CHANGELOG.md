@@ -16,6 +16,25 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Дайджест (ежедневный/еженедельный): запуски, success rate, стоимость, токены, топ ошибок; RPC `send_digest`, кнопка «📊 Отправить дайджест сейчас», GUI-настройки таймаута/шаблонов/фильтров/матриц/дайджеста. ntfy.sh не реализован (исключён заданием).
 - `test-notifications-v2.mjs` (44 проверки) — добавлен в `npm test`.
 
+### Profiles (Спринт 21)
+
+- Профили (`default`, `work`, …): каждый профиль — отдельная директория со своей БД (`scheduler.db`), настройками (`settings.json`), логами, обёртками и портом дашборда. `default` использует базовую директорию плагина (как раньше — без миграции), остальные живут в `<base>/profiles/<name>`.
+- `OPENCODE_SCHEDULER_PROFILE` > файл-маркер `active-profile` > `default`; переключение требует перезапуска OpenCode. Порт дашборда профиля — из `env OPENCODE_SCHEDULER_PORT` > `profile.json` > дефолт (3782/4782/5782).
+- `src/profiles.ts` — `getProfileName()`, `getProfileDir()`, `listProfiles()`, `createProfile()`, `deleteProfile()`, `setActiveProfile()`, `isProfilePinnedByEnv()`; `resolvePluginDir()` в `src/types.ts` теперь delegates to `getProfileDir(getProfileName())`, так что все каталоги/БД/настройки стали per-profile автоматически.
+- RPC: `get_profiles`, `set_profile`, `create_profile`, `delete_profile`; дашборд показывает имя профиля в заголовке и в `/api/health`.
+
+### Workspace env (Спринт 21)
+
+- Env-переменные на workspace: `.env`-файл (`envFile`) или пары ключ-значение (`env`); пары переопределяют файл. Валидация имён ключей (`^[A-Za-z_][A-Za-z0-9_]*$`), максимум 100 пар.
+- Файл `<PLUGIN_DIR>/env/<sanitized>.env` (права 0600) передаётся обёрткам: Windows — `-EnvFile "<путь>"`, POSIX — `ENV_FILE=` + `set -a; . "$ENV_FILE"; set +a` перед запуском `opencode run`. Значения не попадают в логи: секретные ключи (Token/Secret/Pass/Password/Key/Credential/Auth) маскируются как `***`.
+- `manage_workspaces` (add/update) принимает `env` и `envFile`; `get_workspaces`/`get_workspace` возвращают env в замаскированном виде.
+
+### Tests
+
+- `test-profiles.mjs` (58 проверок) — профили: default vs named dir, sanitize/validate, create/list/delete, маркер, порт env > profile.json > null, изоляция БД/настроек через subprocess с разными `OPENCODE_SCHEDULER_HOME`/`OPENCODE_SCHEDULER_PROFILE`.
+- `test-env.mjs` (53 проверок) — парсер `.env` (комментарии, кавычки, `export `), приоритет пар над файлом, валидация ключей и >100 пар, `maskEnvForLog` (секреты → `***`), `writeWorkspaceEnvFile` (содержимое, права 0600, очистка устаревших), круговая запись workspace с env/envFile в БД.
+- Оба теста добавлены в цепочку `npm test` (итого 17 секций, 500+ проверок).
+
 ### Planned
 
 - One-shot scheduling, session continuity, guards, worktree isolation, declarative job files.

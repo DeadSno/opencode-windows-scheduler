@@ -108,7 +108,7 @@ npm run build:gui   # gui-experimental.cjs
 ```bash
 npm run build      # tsc: серверная часть плагина
 npm run build:gui  # vite: GUI-бандл gui-experimental.cjs
-npm test           # 15 сюит, 400+ проверок
+npm test           # 17 сюит, 500+ проверок
 ```
 
 ## Документация

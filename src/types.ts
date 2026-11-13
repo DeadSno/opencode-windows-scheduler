@@ -1,6 +1,6 @@
-import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { getProfileDir, getProfileName } from "./profiles.js";
 
 /** Префикс всех задач плагина (историческое имя, сохраняется для совместимости). */
 export const TASK_PREFIX = "OpenCode\\windows-scheduler";
@@ -15,20 +15,10 @@ export const TASK_FOLDER_NAME = "windows-scheduler";
  * Windows: %APPDATA%\opencode\windows-scheduler (как раньше — без миграции).
  * macOS/Linux: $XDG_CONFIG_HOME/opencode/windows-scheduler или
  *              ~/.config/opencode/windows-scheduler.
+ * Спринт 21: директория зависит от активного профиля (см. src/profiles.ts).
  */
 function resolvePluginDir(): string {
-  // Explicit override (tests, custom installations). Takes precedence on every platform.
-  const custom = process.env.OPENCODE_SCHEDULER_HOME?.trim();
-  if (custom) return path.resolve(custom);
-
-  if (process.platform === "win32") {
-    const base = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
-    return path.join(base, "opencode", TASK_FOLDER_NAME);
-  }
-
-  const configHome =
-    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-  return path.join(configHome, "opencode", TASK_FOLDER_NAME);
+  return getProfileDir(getProfileName());
 }
 
 export const PLUGIN_DIR = resolvePluginDir();

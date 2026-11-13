@@ -86,7 +86,8 @@ is read from the database or from files under the plugin directory.
 
 1. Agent tool / GUI / import calls `schedulerCreateTask(...)`.
 2. Definitions are validated (cron, workspace path, matrix rules), a prompt file and a
-   wrapper script are written under the plugin directory.
+   wrapper script are written under the plugin directory; if the task's workspace has
+   env variables, `<PLUGIN_DIR>/env/<sanitized>.env` is written (mode `0600` on POSIX).
 3. An OS entry is created through the platform backend.
 4. The definition is stored in `tasks.definition_json`.
 
@@ -99,8 +100,9 @@ is read from the database or from files under the plugin directory.
    launch window it waits until the window opens (postpone, deduplicated by a
    defer-file) or exits with code 3 so the wrapper skips silently.
 3. The wrapper acquires the lock (`locks/<task>.lock`), writes the log
-   (`logs/<task>.log`), runs the pre-flight hook and starts `opencode run` with the
-   prompt file. Output is streamed to the log.
+   (`logs/<task>.log`), loads workspace env from `<PLUGIN_DIR>/env/<sanitized>.env`
+   (Windows `-EnvFile`, POSIX `set -a; . "$ENV_FILE"; set +a`) before starting
+   `opencode run` with the prompt file. Output is streamed to the log.
 4. When the process ends, the wrapper enforces the timeout result, runs the Quality
    Gate and the post-flight hook.
 5. The wrapper calls `node dist/core/record-history.js --finish ...` with status,
@@ -124,7 +126,8 @@ from their clones instead of their own last run.
 | `src/server.ts` | Local web dashboard HTTP server and HTML rendering |
 | `src/skill.ts` | Loads and registers the bundled agent skill |
 | `src/task-transfer.ts` | Export/import, validation, `MatrixConfig` types |
-| `src/workspaces.ts` | Workspace registry and path validation |
+| `src/profiles.ts` | Profile directory resolution: per-profile plugin dir (base for `default`, `<base>/profiles/<name>` for named profiles); profile name, marker, port, create/delete/switch |
+| `src/workspaces.ts` | Workspace registry and path validation; env pairs and `.env` file resolution with secret masking |
 | `src/templates.ts` | Reusable task templates |
 | `src/settings.ts` | Plugin settings: notifications and history retention |
 | `src/notifications.ts` | Webhook delivery with retries/backoff, templates, task filters, matrix and stuck-clone notifications, daily/weekly digest |
@@ -173,6 +176,7 @@ enforced:
 | Working directory | Task `workingDirectory`, or the workspace path, or the plugin directory |
 | Prompt | Written to a prompt file, passed to `opencode run` |
 | Timeout | `timeoutSeconds`; on expiry the child process tree is stopped and the run is marked `timeout` |
+| Workspace env | Variables from the workspace's `.env` file and explicit pairs are injected before `opencode run` (wrapper `env:` / `export`); secret-looking keys are masked in logs |
 | No overlap | Lock file per task; a second start exits immediately and records `skipped` |
 | Pre-flight | `beforeScript`; non-zero exit marks `preFlight` as failed |
 | Quality Gate | `qualityGate` after a successful run; non-zero exit turns the run into an error |
@@ -245,10 +249,13 @@ remote and color. Workspaces provide:
 - the working directory for a task (`workspaceId` instead of `workingDirectory`);
 - matrix targets (`matrix.workspaceIds`);
 - per-workspace overrides (`matrix.overrides`);
-- dashboard grouping.
+- dashboard grouping;
+- env variables: explicit `KEY=VALUE` pairs plus an optional `.env` file (loaded first,
+  explicit pairs override), injected into task runs via the wrapper; secret-looking
+  keys are masked in logs.
 
 Paths are validated on creation, update and import: a workspace must point to an
-existing directory.
+existing directory. Env keys must match `^[A-Za-z_][A-Za-z0-9_]*$`; max 100 pairs.
 
 ## Triggers
 
@@ -277,11 +284,17 @@ logs/             per-task run logs
 locks/            lock files
 wrappers/         generated .cmd / .sh wrappers
 prompts/          prompt files
+env/              per-workspace env files (<task>.env), mode 0600 on POSIX
 ```
+
+Named profiles (Sprint 21) each own a copy of this tree under
+`<base>/profiles/<name>` (`default` uses the base directory). Profile directory,
+database, settings, logs, wrappers and locks all resolve per-profile.
 
 Override the database location with `OPENCODE_SCHEDULER_DB` (used by tests). Override
 the whole plugin directory (database, logs, locks, wrappers, prompts) with
-`OPENCODE_SCHEDULER_HOME` on any platform.
+`OPENCODE_SCHEDULER_HOME` on any platform. Profile selection uses
+`OPENCODE_SCHEDULER_PROFILE` > `active-profile` marker > `default`.
 
 Schema evolution is additive: `applySchema` runs `CREATE TABLE IF NOT EXISTS` on every
 connection and adds missing columns after `PRAGMA table_info`, so upgrading the plugin

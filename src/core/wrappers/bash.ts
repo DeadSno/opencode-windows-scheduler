@@ -41,6 +41,11 @@ export interface BashWrapperOptions {
    * запуска выполняется до lock и запуска opencode.
    */
   scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string };
+  /**
+   * Спринт 21: путь к env-файлу workspace (пары KEY=VALUE). Значения
+   * подгружаются перед запуском opencode и никогда не пишутся в лог.
+   */
+  envFile?: string;
 }
 
 /**
@@ -76,6 +81,7 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     allowedTools,
     deniedTools,
     scheduleGate,
+    envFile,
   } = options;
 
   const lines: string[] = [
@@ -104,6 +110,7 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     `SCHEDULE_NOT_BEFORE=${shellQuote(scheduleGate?.notBefore ?? "")}`,
     `SCHEDULE_NOT_AFTER=${shellQuote(scheduleGate?.notAfter ?? "")}`,
     `SCHEDULE_DEFER_FILE=${shellQuote(scheduleGate?.deferFile ?? "")}`,
+    `ENV_FILE=${shellQuote(envFile ?? "")}`,
     "",
     "# cron запускает задачи с минимальным PATH — добавляем типовые каталоги.",
     'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.bun/bin:$PATH"',
@@ -144,6 +151,20 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     "",
     'if [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ]; then',
     '  cd "$WORKDIR" || { log "[scheduler] Не удалось перейти в $WORKDIR"; exit 1; }',
+    "fi",
+    "",
+    "# Спринт 21: env-переменные workspace. Файл пишет плагин, значения не логируются.",
+    'if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then',
+    '  while IFS= read -r env_line || [ -n "$env_line" ]; do',
+    "    env_line=\"${env_line%$'\\r'}\"",
+    "    case \"$env_line\" in ''|'#'*) continue ;; esac",
+    '    env_key="${env_line%%=*}"',
+    '    env_value="${env_line#*=}"',
+    '    case "$env_key" in *[!A-Za-z0-9_]*) continue ;; esac',
+    '    case "$env_key" in [A-Za-z_]*) ;; *) continue ;; esac',
+    '    export "$env_key=$env_value"',
+    '  done < "$ENV_FILE"',
+    '  log "[scheduler] Переменные окружения workspace загружены."',
     "fi",
     "",
     'if [ -n "$WORKSPACE_NAME" ]; then',

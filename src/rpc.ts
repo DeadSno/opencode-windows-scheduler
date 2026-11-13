@@ -742,6 +742,10 @@ const WorkspaceItem = {
     gitRemote: { type: ["string", "null"] },
     gitBranch: { type: ["string", "null"] },
     color: { type: ["string", "null"] },
+    /** Env-переменные workspace; значения секретов замаскированы (***). */
+    env: { type: ["object", "null"], additionalProperties: { type: "string" } },
+    /** Путь к .env-файлу workspace (null — не задан). */
+    envFile: { type: ["string", "null"] },
     createdAt: { type: "string" },
   },
   required: ["id", "name", "path", "createdAt"],
@@ -767,6 +771,10 @@ const AddWorkspaceInput = {
     name: { type: "string" },
     path: { type: "string" },
     color: { type: "string" },
+    /** Env-переменные workspace (ключ → значение). */
+    env: { type: ["object", "null"], additionalProperties: { type: "string" } },
+    /** Путь к .env-файлу workspace. */
+    envFile: { type: ["string", "null"] },
   },
   required: ["path"],
   additionalProperties: false,
@@ -789,6 +797,10 @@ const UpdateWorkspaceInput = {
     name: { type: "string" },
     path: { type: "string" },
     color: { type: "string" },
+    /** Env-переменные workspace; null — очистить, отсутствие — не менять. */
+    env: { type: ["object", "null"], additionalProperties: { type: "string" } },
+    /** Путь к .env-файлу; null — очистить. */
+    envFile: { type: ["string", "null"] },
   },
   required: ["id"],
   additionalProperties: false,
@@ -1030,6 +1042,97 @@ const CleanupMatrixOrphansOutput = {
   required: ["success", "message", "removed"],
 } as const;
 
+/** Профиль (Спринт 21): отдельная БД, настройки, логи и порт дашборда. */
+const ProfileItem = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+    dir: { type: "string" },
+    port: { type: ["number", "null"] },
+    isDefault: { type: "boolean" },
+    active: { type: "boolean" },
+  },
+  required: ["name", "dir", "isDefault", "active"],
+} as const;
+
+const GetProfilesInput = {
+  type: "object" as const,
+  properties: {},
+  additionalProperties: false,
+} as const;
+
+const GetProfilesOutput = {
+  type: "object" as const,
+  properties: {
+    current: { type: "string" },
+    /** true — профиль задан переменной OPENCODE_SCHEDULER_PROFILE. */
+    pinnedByEnv: { type: "boolean" },
+    profiles: { type: "array", items: ProfileItem },
+  },
+  required: ["current", "pinnedByEnv", "profiles"],
+} as const;
+
+const SetProfileInput = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+  },
+  required: ["name"],
+  additionalProperties: false,
+} as const;
+
+const SetProfileOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+    current: { type: "string" },
+    /** true — изменения вступят в силу после перезапуска OpenCode. */
+    restartRequired: { type: "boolean" },
+  },
+  required: ["success", "message", "current", "restartRequired"],
+} as const;
+
+const CreateProfileInput = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+    /** Порт дашборда профиля (по умолчанию — свободный 3782+). */
+    port: { type: "number" },
+  },
+  required: ["name"],
+  additionalProperties: false,
+} as const;
+
+const CreateProfileOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+    profile: ProfileItem,
+    error: { type: "string" },
+  },
+  required: ["success"],
+} as const;
+
+const DeleteProfileInput = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+  },
+  required: ["name"],
+  additionalProperties: false,
+} as const;
+
+const DeleteProfileOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+  },
+  required: ["success", "message"],
+} as const;
+
 export const SchedulerRpc = Rpc.define({
   id: "opencode-windows-scheduler",
   methods: {
@@ -1066,6 +1169,10 @@ export const SchedulerRpc = Rpc.define({
     add_workspace: { input: AddWorkspaceInput, output: AddWorkspaceOutput },
     update_workspace: { input: UpdateWorkspaceInput, output: AddWorkspaceOutput },
     delete_workspace: { input: DeleteWorkspaceInput, output: DeleteWorkspaceOutput },
+    get_profiles: { input: GetProfilesInput, output: GetProfilesOutput },
+    set_profile: { input: SetProfileInput, output: SetProfileOutput },
+    create_profile: { input: CreateProfileInput, output: CreateProfileOutput },
+    delete_profile: { input: DeleteProfileInput, output: DeleteProfileOutput },
     export_tasks: { input: ExportTasksInput, output: ExportTasksOutput },
     import_tasks: { input: ImportTasksInput, output: ImportTasksOutput },
     get_settings: { input: GetSettingsInput, output: GetSettingsOutput },

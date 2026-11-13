@@ -58,6 +58,17 @@ import type {
 import { loadTemplates, saveTemplate, deleteTemplate } from "./templates.js";
 import type { TaskTemplate } from "./templates.js";
 import { startDashboardServer, closeDashboardServer, getDashboardPort } from "./server.js";
+import {
+  DEFAULT_PROFILE,
+  createProfile,
+  deleteProfile,
+  getProfileDir,
+  getProfileName,
+  isProfilePinnedByEnv,
+  listProfiles,
+  sanitizeProfileName,
+  setActiveProfile,
+} from "./profiles.js";
 import { closeDb, initDb } from "./db/index.js";
 import { migrateJsonToDb } from "./db/migrate.js";
 import { checkJsonBackups, recoverInterruptedRuns } from "./db/recovery.js";
@@ -70,6 +81,8 @@ import {
   updateWorkspace,
   validateWorkspacePath,
   readGitBranch,
+  writeWorkspaceEnvFile,
+  maskEnvForLog,
 } from "./workspaces.js";
 
 // Путь к вспомогательному node-скрипту записи истории/метрик (dist/core/record-history.js).
@@ -451,6 +464,18 @@ const manageWorkspacesSchema = z.object({
   name: z.string().optional().describe("Workspace display name (add/update)."),
   path: z.string().optional().describe("Absolute workspace path (add/update)."),
   color: z.string().optional().describe("Marker color, e.g. #4f8cff (add/update)."),
+  env: z
+    .record(z.string(), z.string())
+    .nullable()
+    .optional()
+    .describe(
+      "Env-переменные workspace (ключ → значение). Переопределяют значения из envFile; секреты маскируются в логах (add/update)."
+    ),
+  envFile: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Путь к .env-файлу workspace (add/update, null — очистить)."),
 });
 
 export const matrixControlSchema = z.object({
@@ -1268,6 +1293,22 @@ const dryRunExecute = wrapExecute<DryRunArgs>(async (args) => {
   };
 });
 
+/**
+ * Перегенерирует env-файлы всех задач, привязанных к workspace (Спринт 21).
+ * Обёртки читают env-файл при запуске, поэтому перезапуск задач не нужен.
+ */
+async function refreshWorkspaceEnvFiles(workspaceId: string): Promise<number> {
+  const workspace = getWorkspace(workspaceId);
+  if (!workspace) return 0;
+  let refreshed = 0;
+  for (const task of await loadTaskDefinitions()) {
+    if (task.workspaceId !== workspaceId) continue;
+    writeWorkspaceEnvFile(workspace, PLUGIN_DIR, sanitizeName(task.name));
+    refreshed += 1;
+  }
+  return refreshed;
+}
+
 /** manage_workspaces — CRUD multi-repo workspace-ов. */
 const manageWorkspacesExecute = wrapExecute<WorkspacesArgs>(async (args) => {
   try {
@@ -1275,6 +1316,7 @@ const manageWorkspacesExecute = wrapExecute<WorkspacesArgs>(async (args) => {
       case "list": {
         const workspaces = listWorkspaces().map((workspace) => ({
           ...workspace,
+          env: maskEnvForLog(workspace.env),
           gitBranch: readGitBranch(workspace.path) ?? null,
         }));
         return {
@@ -1298,12 +1340,15 @@ const manageWorkspacesExecute = wrapExecute<WorkspacesArgs>(async (args) => {
           name: args.name,
           path: args.path,
           color: args.color,
+          env: args.env,
+          envFile: args.envFile,
         });
         return {
           content: JSON.stringify({
             success: true,
             workspace: {
               ...workspace,
+              env: maskEnvForLog(workspace.env),
               gitBranch: readGitBranch(workspace.path) ?? null,
             },
           }),
@@ -1322,6 +1367,8 @@ const manageWorkspacesExecute = wrapExecute<WorkspacesArgs>(async (args) => {
           name: args.name,
           path: args.path,
           color: args.color,
+          env: args.env,
+          envFile: args.envFile,
         });
         if (!workspace) {
           return {
@@ -1331,11 +1378,16 @@ const manageWorkspacesExecute = wrapExecute<WorkspacesArgs>(async (args) => {
             }),
           };
         }
+        // Env-файлы уже созданных задач перегенерируются сразу: обёртки читают
+        // файл при запуске, поэтому ждать обновления задачи не нужно.
+        const refreshedTasks = await refreshWorkspaceEnvFiles(workspace.id);
         return {
           content: JSON.stringify({
             success: true,
+            refreshedTasks,
             workspace: {
               ...workspace,
+              env: maskEnvForLog(workspace.env),
               gitBranch: readGitBranch(workspace.path) ?? null,
             },
           }),
@@ -2173,36 +2225,57 @@ export default Plugin.define({
         return {
           workspaces: listWorkspaces().map((workspace) => ({
             ...workspace,
+            env: maskEnvForLog(workspace.env),
             gitBranch: readGitBranch(workspace.path) ?? null,
           })),
         };
       },
       add_workspace: async (input: unknown) => {
         try {
-          const { name, path: workspacePath, color } = input as {
+          const { name, path: workspacePath, color, env, envFile } = input as {
             name?: string;
             path: string;
             color?: string;
+            env?: Record<string, string> | null;
+            envFile?: string | null;
           };
-          const workspace = addWorkspace({ name, path: workspacePath, color });
-          return { success: true, workspace: { ...workspace, gitBranch: readGitBranch(workspace.path) ?? null } };
+          const workspace = addWorkspace({ name, path: workspacePath, color, env, envFile });
+          return {
+            success: true,
+            workspace: {
+              ...workspace,
+              env: maskEnvForLog(workspace.env),
+              gitBranch: readGitBranch(workspace.path) ?? null,
+            },
+          };
         } catch (err: any) {
           return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
       },
       update_workspace: async (input: unknown) => {
         try {
-          const { id, name, path: workspacePath, color } = input as {
+          const { id, name, path: workspacePath, color, env, envFile } = input as {
             id: string;
             name?: string;
             path?: string;
             color?: string;
+            env?: Record<string, string> | null;
+            envFile?: string | null;
           };
-          const workspace = updateWorkspace(id, { name, path: workspacePath, color });
+          const workspace = updateWorkspace(id, { name, path: workspacePath, color, env, envFile });
           if (!workspace) {
             return { success: false, error: "Workspace не найден." };
           }
-          return { success: true, workspace: { ...workspace, gitBranch: readGitBranch(workspace.path) ?? null } };
+          // env-файлы существующих задач перегенерируются сразу (Спринт 21).
+          await refreshWorkspaceEnvFiles(workspace.id);
+          return {
+            success: true,
+            workspace: {
+              ...workspace,
+              env: maskEnvForLog(workspace.env),
+              gitBranch: readGitBranch(workspace.path) ?? null,
+            },
+          };
         } catch (err: any) {
           return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
@@ -2216,6 +2289,72 @@ export default Plugin.define({
             message: deleted
               ? "Workspace удалён. Задачи сохранены, привязка очищена."
               : "Workspace не найден.",
+          };
+        } catch (err: any) {
+          return { success: false, message: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      get_profiles: async () => {
+        return {
+          current: getProfileName(),
+          pinnedByEnv: isProfilePinnedByEnv(),
+          profiles: listProfiles(),
+        };
+      },
+      set_profile: async (input: unknown) => {
+        const { name } = input as { name: string };
+        try {
+          setActiveProfile(name);
+          const current = getProfileName();
+          return {
+            success: true,
+            current,
+            restartRequired: true,
+            message: isProfilePinnedByEnv()
+              ? `Профиль задан переменной OPENCODE_SCHEDULER_PROFILE=${current}. Перезапустите OpenCode, чтобы применить изменения.`
+              : `Активный профиль: ${sanitizeProfileName(name)}. Перезапустите OpenCode, чтобы применить изменения.`,
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            current: getProfileName(),
+            restartRequired: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+      create_profile: async (input: unknown) => {
+        const { name, port } = input as { name: string; port?: number };
+        try {
+          const meta = createProfile(name, port);
+          const profile = listProfiles().find((item) => item.name === meta.name);
+          return {
+            success: true,
+            message: `Профиль "${meta.name}" создан (порт дашборда ${meta.port}).`,
+            profile: profile ?? {
+              name: meta.name,
+              dir: getProfileDir(meta.name),
+              port: meta.port,
+              isDefault: meta.name === DEFAULT_PROFILE,
+              active: meta.name === getProfileName(),
+            },
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+      delete_profile: async (input: unknown) => {
+        const { name } = input as { name: string };
+        try {
+          const removed = deleteProfile(name);
+          return {
+            success: removed,
+            message: removed
+              ? `Профиль "${sanitizeProfileName(name)}" удалён вместе с его БД и настройками.`
+              : "Профиль не найден.",
           };
         } catch (err: any) {
           return { success: false, message: err instanceof Error ? err.message : String(err) };
@@ -2702,6 +2841,13 @@ async function schedulerCreateTask(
   const effectiveWorkingDirectory =
     workspace?.path || workingDirectory?.trim() || projectDirectory || process.cwd();
 
+  // Спринт 21: env-переменные workspace → отдельный файл, который читает обёртка.
+  // Значения не логируются; в лог попадает только факт загрузки.
+  const taskEnvFile = writeWorkspaceEnvFile(workspace, PLUGIN_DIR, sanitized);
+  if (taskEnvFile) {
+    console.log(`[workspace] Задача "${name}": env-переменные workspace подключены.`);
+  }
+
   let promptFile: string;
   try {
     promptFile = await writePromptFile(sanitized, prompt);
@@ -2734,7 +2880,8 @@ async function schedulerCreateTask(
         workspace?.name,
         normalizedAllowedTools,
         normalizedDeniedTools,
-        wrapperGate
+        wrapperGate,
+        taskEnvFile
       );
     } else {
       wrapperPath = await writeBashWrapper({
@@ -2754,6 +2901,7 @@ async function schedulerCreateTask(
         allowedTools: normalizedAllowedTools,
         deniedTools: normalizedDeniedTools,
         scheduleGate: wrapperGate,
+        envFile: taskEnvFile,
       });
     }
   } catch (err: any) {

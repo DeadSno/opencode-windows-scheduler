@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
   path TEXT NOT NULL UNIQUE,
   git_remote TEXT,
   color TEXT,
+  env_json TEXT,
+  env_file TEXT,
   created_at TEXT NOT NULL
 );
 `;
@@ -105,5 +107,17 @@ export function applySchema(db: SchemaDb): void {
   }
   if (!taskColumnNames.includes("is_matrix_parent")) {
     db.exec("ALTER TABLE tasks ADD COLUMN is_matrix_parent INTEGER DEFAULT 0");
+  }
+
+  // Спринт 21: env-переменные на workspace (пары ключ-значение и .env-файл).
+  const workspaceColumns = db.prepare("PRAGMA table_info(workspaces)").all() as Array<{
+    name?: string;
+  }>;
+  const workspaceColumnNames = workspaceColumns.map((c) => c.name).filter(Boolean);
+  if (!workspaceColumnNames.includes("env_json")) {
+    db.exec("ALTER TABLE workspaces ADD COLUMN env_json TEXT");
+  }
+  if (!workspaceColumnNames.includes("env_file")) {
+    db.exec("ALTER TABLE workspaces ADD COLUMN env_file TEXT");
   }
 }

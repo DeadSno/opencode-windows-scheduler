@@ -9,6 +9,7 @@ import { getSchedulerTitle } from "./core/scheduler/index.js";
 import { getPluginVersion } from "./version.js";
 import { checkpointDb, getDbFile, getDbStatus } from "./db/index.js";
 import { listWorkspaces } from "./workspaces.js";
+import { getProfileName, getProfilePort } from "./profiles.js";
 import { simulatePipeline } from "./core/dry-run.js";
 
 /**
@@ -255,7 +256,8 @@ export async function startDashboardServer(
   if (running) return { port: running.port };
   if (starting) return starting;
 
-  const preferred = ports?.preferred ?? PREFERRED_PORT;
+  // Спринт 21: у профиля может быть свой порт (profile.json / OPENCODE_SCHEDULER_PORT).
+  const preferred = ports?.preferred ?? getProfilePort(getProfileName()) ?? PREFERRED_PORT;
   const fallback = ports?.fallback ?? FALLBACK_PORT;
   // Последний кандидат — порт 0: ОС сама выдаст гарантированно свободный порт.
   const candidates = ports
@@ -525,6 +527,7 @@ async function handleRequest(
         port: getDashboardPort(),
         version: getPluginVersion(),
         scheduler: getSchedulerTitle(),
+        profile: getProfileName(),
         queueDepth: countRunningRecords(),
         db: getDbStatus(),
       });
@@ -1075,7 +1078,7 @@ function renderPage(): string {
     <header>
       <div>
         <h1>❄️ ${getSchedulerTitle()} ❄️</h1>
-        <div class="sub">Локальный веб-дашборд · Local AI CI/CD Orchestrator</div>
+        <div class="sub">Локальный веб-дашборд · Local AI CI/CD Orchestrator · профиль <b>${getProfileName()}</b></div>
       </div>
       <div style="text-align:right">
         <a class="btn btn-db" href="/api/export-db" download>💾 Скачать БД</a>
