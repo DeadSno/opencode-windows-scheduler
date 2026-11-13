@@ -1,6 +1,7 @@
 // Ручной тест веб-дашборда (Спринт 5): запускает сервер со стабами и проверяет эндпоинты.
 import { startDashboardServer, closeDashboardServer, isDashboardRunning, getDashboardPort } from "./dist/server.js";
 import { startDashboardServer as start2 } from "./dist/server.js";
+import { getSchedulerTitle } from "./dist/core/scheduler/index.js";
 
 const deps = {
   getTasks: async () => [
@@ -38,9 +39,10 @@ assert(reuse && reuse.port === 4310, "запуск на порт с уже сл�
 
 const base = "http://127.0.0.1:" + getDashboardPort();
 
-// GET / — HTML.
+// GET / — HTML. Заголовок платформозависимый (Windows / launchd / cron),
+// поэтому сверяем его с фактическим значением для текущей ОС, а не с константой.
 const html = await fetch(base + "/").then(r => r.text());
-assert(html.includes("<!DOCTYPE html>") && html.includes("Планировщик Windows"), "GET / отдаёт HTML-страницу");
+assert(html.includes("<!DOCTYPE html>") && html.includes(getSchedulerTitle()), "GET / отдаёт HTML-страницу");
 assert(html.includes("/api/tasks"), "страница использует fetch к /api/tasks");
 
 // GET /api/tasks — задачи + метрики из history.json.
