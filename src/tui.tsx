@@ -1,6 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
-import { getJobsView, statusIcon, type JobView } from "./shared/jobs-view"
+import { getSchedulerBackend } from "./core/scheduler/index"
+import {
+  getJobsView,
+  groupJobsForDisplay,
+  statusIcon,
+  type JobView,
+} from "./shared/jobs-view"
+
+type JobAction = "run" | "pause" | "resume"
 
 /**
  * TUI-часть плагина: панель "Планировщик Windows" в боковой панели терминала.
@@ -45,6 +53,147 @@ export default Plugin.define({
       }
     }
 
+    async function runAction(job: JobView, action: JobAction): Promise<void> {
+      try {
+        const backend = getSchedulerBackend()
+        if (action === "run") {
+          const result = await backend.runTask(job.name)
+          ctx.ui.toast.show({
+            title: "Планировщик Windows",
+            message: result.alreadyRunning
+              ? `«${job.name}» уже выполняется`
+              : `Запущено: ${job.name}`,
+            variant: result.alreadyRunning ? "warning" : "success",
+          })
+        } else {
+          const shouldPause = action === "pause"
+          if (shouldPause) await backend.pauseTask(job.name)
+          else await backend.resumeTask(job.name)
+          ctx.ui.toast.show({
+            title: "Планировщик Windows",
+            message: shouldPause
+              ? `Пауза: ${job.name}`
+              : `Возобновлено: ${job.name}`,
+            variant: "success",
+          })
+        }
+        await refresh()
+      } catch (err) {
+        ctx.ui.toast.show({
+          title: "Планировщик Windows",
+          message: `Не удалось выполнить действие для «${job.name}»: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          variant: "error",
+        })
+      }
+    }
+
+    async function openActions(job: JobView): Promise<void> {
+      try {
+        const options: Array<{
+          title: string
+          value: JobAction
+          description?: string
+          disabled?: boolean
+        }> = []
+        options.push({
+          title: "▶ Запустить сейчас",
+          value: "run",
+          description: job.matrixParentId
+            ? "Клон матрицы запускается через родительскую задачу"
+            : job.status === "running"
+            ? "Задача уже выполняется"
+            : "Запустить задачу немедленно",
+          disabled: Boolean(job.matrixParentId),
+        })
+        options.push({
+          title: job.paused ? "▶ Возобновить" : "⏸ Поставить на паузу",
+          value: job.paused ? "resume" : "pause",
+          description: job.paused
+            ? "Снять задачу с паузы в планировщике ОС"
+            : "Приостановить запуски в планировщике ОС",
+        })
+
+        const action = await ctx.ui.dialog.select<JobAction>({
+          title: `Задача: ${job.name}`,
+          placeholder: "Выберите действие",
+          options,
+        })
+        if (!action || disposed) return
+        await runAction(job, action)
+      } catch (err) {
+        ctx.ui.toast.show({
+          title: "Планировщик Windows",
+          message: `Не удалось открыть действия: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          variant: "error",
+        })
+      }
+    }
+
+    async function chooseJob(): Promise<void> {
+      try {
+        if (state.jobs.length === 0) {
+          ctx.ui.toast.show({
+            title: "Планировщик Windows",
+            message: "Задач пока нет",
+            variant: "warning",
+          })
+          return
+        }
+        const name = await ctx.ui.dialog.select<string>({
+          title: "Планировщик: выберите задачу",
+          placeholder: "Имя задачи",
+          options: groupJobsForDisplay(state.jobs).map(({ job, depth }) => ({
+            title: `${"  ".repeat(depth)}${job.isMatrixParent ? "▣ " : depth > 0 ? "↳ " : ""}${job.name}`,
+            value: job.name,
+            description: `${statusIcon(job.status)}${
+              job.paused ? " пауза" : ""
+            }${job.nextRun ? ` · следующий запуск: ${job.nextRun}` : ""}`,
+          })),
+        })
+        if (!name || disposed) return
+        const job = state.jobs.find((item) => item.name === name)
+        if (job) await openActions(job)
+      } catch (err) {
+        ctx.ui.toast.show({
+          title: "Планировщик Windows",
+          message: `Не удалось открыть список задач: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          variant: "error",
+        })
+      }
+    }
+
+    // Команда доступна из палитры команд; горячая клавиша — удобный shortcut.
+    ctx.keymap.layer(() => ({
+      commands: [
+        {
+          id: "opencode-windows-scheduler.actions",
+          title: "Планировщик: действия с задачей",
+          description: "Запустить, поставить на паузу или возобновить задачу",
+          group: "Планировщик Windows",
+          palette: true,
+          bind: "ctrl+shift+j",
+          run: () => {
+            void chooseJob()
+          },
+        },
+        {
+          id: "opencode-windows-scheduler.refresh",
+          title: "Планировщик: обновить список",
+          group: "Планировщик Windows",
+          palette: true,
+          run: () => {
+            void refresh()
+          },
+        },
+      ],
+    }))
+
     const timer = setInterval(() => {
       void refresh()
     }, 5000)
@@ -61,14 +210,17 @@ export default Plugin.define({
           {state.jobs.length === 0 ? (
             <text>Задач пока нет</text>
           ) : (
-            state.jobs.map((job) => (
-              <text>
+            groupJobsForDisplay(state.jobs).map(({ job, depth }) => (
+              <text onMouseDown={() => void openActions(job)}>
+                {"  ".repeat(depth)}
+                {depth > 0 ? "↳ " : job.isMatrixParent ? "▣ " : ""}
                 {statusIcon(job.status)} {job.name}
                 {job.paused ? " (пауза)" : ""}
                 {job.nextRun ? ` → ${job.nextRun}` : ""}
               </text>
             ))
           )}
+          <text>Клик по задаче — действия · Ctrl+Shift+J — меню</text>
         </box>
       ),
     })

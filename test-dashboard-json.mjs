@@ -160,6 +160,15 @@ assert(historyPartial.body.total === 3 && historyPartial.body.records.every((r) 
 const historyPage = await readJsonResponse(await fetch(base + "/api/history?limit=5"));
 assert(historyPage.body.total === 12 && historyPage.body.records.length === 5, "limit=5 режет выдачу, но total остаётся полным");
 
+const favicon = await fetch(base + "/favicon.ico");
+assert(favicon.status === 204, "GET /favicon.ico -> 204 без 404 в консоли");
+
+const summaryApi = await readJsonResponse(await fetch(base + "/api/summary"));
+assert(summaryApi.status === 200 && summaryApi.body.total === metricsApi.body.total, "/api/summary отдаёт те же метрики");
+
+const wrongSummaryMethod = await readJsonResponse(await fetch(base + "/api/summary", { method: "POST" }));
+assert(wrongSummaryMethod.status === 405, "POST /api/summary -> 405");
+
 const nfApi = await readJsonResponse(await fetch(base + "/api/unknown"));
 assert(nfApi.status === 404 && nfApi.contentType.includes("application/json"), "неизвестный /api/* -> 404 JSON");
 assert(nfApi.body.error === "Not found", "неизвестный /api/* -> { error: 'Not found' }");

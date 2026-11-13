@@ -505,6 +505,7 @@ async function handleRequest(
       pathname === "/api/tasks" ||
       pathname === "/api/history" ||
       pathname === "/api/metrics" ||
+      pathname === "/api/summary" ||
       pathname === "/api/models-analysis" ||
       pathname === "/api/analytics" ||
       pathname === "/api/history/export" ||
@@ -524,6 +525,13 @@ async function handleRequest(
       pathname === "/api/matrix-cleanup";
     if (knownPost && req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    // Браузер всегда просит иконку. Отвечаем 204, чтобы не засорять консоль 404.
+    if (req.method === "GET" && pathname === "/favicon.ico") {
+      res.writeHead(204);
+      res.end();
       return;
     }
 
@@ -1137,6 +1145,7 @@ function renderPage(): string {
 <title>${getSchedulerTitle()} — Веб-дашборд</title>
 <style>
   :root {
+    color-scheme: dark;
     --bg1: #0f172a; --bg2: #000000; --panel: #141c2b; --panel2: #1b2436;
     --border: #24314a; --text: #e6ecf5; --muted: #8fa0b8;
     --accent: #7ec8fa; --ok: #34c759; --err: #ff5a5f; --run: #f5a623;
@@ -1186,10 +1195,10 @@ function renderPage(): string {
   .badge.okb { background: rgba(52, 199, 89, .14); color: var(--ok); }
   .badge.errb { background: rgba(255, 90, 95, .14); color: var(--err); }
   .badge.unk { background: rgba(143, 160, 184, .14); color: var(--muted); }
-  .badge.part { background: rgba(255, 159, 10, .14); color: #ff9f0a; }
+  .badge.part { background: rgba(255, 159, 10, .14); color: var(--run); }
   .matrix-toggle { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
   .matrix-toggle:hover { color: var(--accent); }
-  .matrix-badge { font-size: 11px; color: #ff9f0a; white-space: nowrap; }
+  .matrix-badge { font-size: 11px; color: var(--run); white-space: nowrap; }
   .clone-badge { font-size: 11px; color: var(--muted); white-space: nowrap; }
   tr.clone-row td { background: rgba(126, 200, 250, 0.03); }
   tr.clone-row .name { padding-left: 26px; font-weight: 500; color: #cfd7e3; }
@@ -1235,6 +1244,17 @@ function renderPage(): string {
   .wi-table .wi-model { color: #c084fc; }
   .graph { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; }
   .graph-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .graph-hint { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .graph-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+  .graph-canvas { position: relative; }
+  .graph-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 6px 9px; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 8px; font-size: 12px; }
+  .graph-node .g-name { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .graph-node .g-meta { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .graph-node.okg { border-left-color: #3fb950; }
+  .graph-node.errg { border-left-color: #ff3b30; }
+  .graph-node.partg { border-left-color: #f5a623; }
+  .graph-node.rung { border-left-color: #58a6ff; }
+  .graph-edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
   .chain-line { font-size: 13px; padding: 3px 0; }
   .chain-line .dep { color: var(--accent); }
   .chain-line .arrow { color: var(--muted); margin: 0 6px; }
@@ -1267,6 +1287,28 @@ function renderPage(): string {
   .toast { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
   .toast.ok2 { border-color: rgba(52,199,89,.5); }
   .toast.err2 { border-color: rgba(255,90,95,.5); }
+  /* Светлая тема: переменные темы + точечные правки для цветов, которые
+     заданы не через var(). Тёмная остаётся по умолчанию. */
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg1: #f5f8fc; --bg2: #ffffff; --panel: #ffffff; --panel2: #eef3f9;
+      --border: #cbd6e2; --text: #17202b; --muted: #56667a;
+      --accent: #0b6ea8; --ok: #167a37; --err: #bc2c22; --run: #9a5a00;
+    }
+    html { background: var(--bg2); }
+    .snow { color: #9cc7ea; opacity: .4; }
+    tr.clone-row .name { color: #3c4b5e; }
+    .model, .hist-model, .wi-table .wi-model { color: #7b3fb0; }
+    .graph-node { background: var(--panel2); }
+    .toast { box-shadow: 0 6px 18px rgba(20, 40, 70, .18); }
+  }
+  a:focus-visible, button:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .snow { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -1295,8 +1337,11 @@ function renderPage(): string {
     </div>
 
     <div class="graph" id="graph" style="display:none">
-      <div class="graph-title">🔗 Цепочки зависимостей (DAG)</div>
-      <div id="graph-lines"></div>
+      <div class="graph-title">🔗 Граф зависимостей (DAG)</div>
+      <div class="graph-hint">Слева — задачи без зависимостей, справа — задачи, которые ждут их успешного завершения. Граф можно прокручивать по горизонтали.</div>
+      <div class="graph-scroll" id="graph-scroll" role="region" aria-label="Граф зависимостей задач" tabindex="0">
+        <div id="graph-lines"></div>
+      </div>
     </div>
 
     <div class="ws-summary" id="ws-summary">📦 0 workspace · 0 задач</div>
@@ -1359,6 +1404,10 @@ function renderPage(): string {
   /** История: последний загруженный список и режим «показать все». */
   var lastHistory = [];
   var historyExpanded = false;
+  // true — /api/metrics уже был заблокирован (например, антивирусом),
+  // поэтому дальше сразу используем /api/summary и не шумим в консоли.
+  var preferSummaryMetrics = false;
+  var metricsFallbackLogged = false;
 
   function esc(s) {
     var d = document.createElement('div');
@@ -1473,7 +1522,7 @@ function renderPage(): string {
     if (!t.isMatrixParent || !s) return '';
     var color = s.status === 'success' ? 'var(--ok)'
       : s.status === 'error' ? 'var(--err)'
-      : s.status === 'partial' ? '#ff9f0a'
+      : s.status === 'partial' ? 'var(--run)'
       : 'var(--run)';
     return '<div class="matrix-badge" style="color:' + color + '" title="' + esc(s.message) + '">' +
       '📦 Matrix: ' + s.successCount + '/' + s.totalCount + ' успешных' +
@@ -1705,20 +1754,147 @@ function renderPage(): string {
     var box = document.getElementById('graph-lines');
     if (!graph || !box) return;
     if (!tasks || tasks.length === 0) { graph.style.display = 'none'; return; }
-    var html = '';
+
+    var known = {};
     for (var i = 0; i < tasks.length; i++) {
-      var t = tasks[i];
-      var deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
-      if (deps.length === 0) continue;
-      var parts = [];
-      for (var j = 0; j < deps.length; j++) {
-        parts.push('<span class="dep">[' + esc(deps[j]) + ']</span>');
-      }
-      html += '<div class="chain-line">' + parts.join(' <span class="arrow">+</span> ') +
-              '<span class="arrow">➔</span><span class="target">[' + esc(t.name) + ']</span></div>';
+      known[String(tasks[i].name).toLowerCase()] = tasks[i];
     }
-    if (!html) { graph.style.display = 'none'; return; }
-    box.innerHTML = html;
+
+    // В граф включаем только задачи, связанные зависимостями, и все их
+    // транзитивные предки. Одиночные задачи не превращают блок в свалку.
+    var involved = {};
+    function collect(name, depth) {
+      var key = String(name).toLowerCase();
+      if (depth > 40 || involved[key] || !known[key]) return;
+      involved[key] = known[key];
+      var deps = Array.isArray(known[key].dependsOn) ? known[key].dependsOn : [];
+      for (var d = 0; d < deps.length; d++) collect(deps[d], depth + 1);
+    }
+    var hasEdges = false;
+    for (var t = 0; t < tasks.length; t++) {
+      var direct = Array.isArray(tasks[t].dependsOn) ? tasks[t].dependsOn : [];
+      if (direct.length > 0) {
+        hasEdges = true;
+        collect(tasks[t].name, 0);
+      }
+    }
+    if (!hasEdges) { graph.style.display = 'none'; return; }
+
+    // Слои: уровень задачи = максимум по уровню зависимостей + 1.
+    // visiting защищает от циклов в ошибочно настроенном DAG.
+    var levels = {};
+    var visiting = {};
+    function levelOf(name) {
+      var key = String(name).toLowerCase();
+      if (levels[key] != null) return levels[key];
+      if (visiting[key]) return 0;
+      visiting[key] = true;
+      var own = 0;
+      var deps = Array.isArray(known[key] && known[key].dependsOn) ? known[key].dependsOn : [];
+      for (var d = 0; d < deps.length; d++) {
+        var depKey = String(deps[d]).toLowerCase();
+        if (!known[depKey]) continue;
+        own = Math.max(own, levelOf(depKey) + 1);
+      }
+      visiting[key] = false;
+      levels[key] = own;
+      return own;
+    }
+
+    var byLevel = {};
+    var maxLevel = 0;
+    for (var key in involved) {
+      if (!Object.prototype.hasOwnProperty.call(involved, key)) continue;
+      var level = levelOf(key);
+      maxLevel = Math.max(maxLevel, level);
+      if (!byLevel[level]) byLevel[level] = [];
+      byLevel[level].push(involved[key]);
+    }
+    for (var l = 0; l <= maxLevel; l++) {
+      if (byLevel[l]) byLevel[l].sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+    }
+
+    var NODE_W = 180;
+    var NODE_H = 46;
+    var GAP_X = 64;
+    var GAP_Y = 18;
+    var PAD = 10;
+    var maxRows = 1;
+    for (var rowLevel in byLevel) {
+      if (byLevel[rowLevel].length > maxRows) maxRows = byLevel[rowLevel].length;
+    }
+    var width = PAD * 2 + (maxLevel + 1) * NODE_W + maxLevel * GAP_X;
+    var height = PAD * 2 + maxRows * (NODE_H + GAP_Y) - GAP_Y;
+
+    var pos = {};
+    for (var lv = 0; lv <= maxLevel; lv++) {
+      var nodes = byLevel[lv] || [];
+      for (var n = 0; n < nodes.length; n++) {
+        pos[String(nodes[n].name).toLowerCase()] = {
+          x: PAD + lv * (NODE_W + GAP_X),
+          y: PAD + n * (NODE_H + GAP_Y),
+          task: nodes[n]
+        };
+      }
+    }
+
+    function shortLabel(value, max) {
+      var text = String(value == null ? '' : value);
+      return text.length > max ? text.slice(0, max - 1) + '…' : text;
+    }
+    function attr(value) {
+      return esc(String(value == null ? '' : value)).replace(/"/g, '&quot;');
+    }
+    function statusClass(status) {
+      if (status === 'success') return ' okg';
+      if (status === 'error' || status === 'timeout') return ' errg';
+      if (status === 'partial') return ' partg';
+      if (status === 'running') return ' rung';
+      return '';
+    }
+
+    var svg = '<svg width="' + width + '" height="' + height + '" style="position:absolute;left:0;top:0;pointer-events:none" aria-hidden="true">' +
+      '<defs><marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">' +
+      '<path d="M0,0 L8,4 L0,8 z" fill="#8b949e"></path></marker></defs>';
+    for (var targetKey in pos) {
+      if (!Object.prototype.hasOwnProperty.call(pos, targetKey)) continue;
+      var target = pos[targetKey];
+      var deps = Array.isArray(target.task.dependsOn) ? target.task.dependsOn : [];
+      for (var di = 0; di < deps.length; di++) {
+        var from = pos[String(deps[di]).toLowerCase()];
+        if (!from || from.x >= target.x) continue;
+        var x1 = from.x + NODE_W;
+        var y1 = from.y + NODE_H / 2;
+        var x2 = target.x;
+        var y2 = target.y + NODE_H / 2;
+        var bend = Math.max(24, (x2 - x1) / 2);
+        svg += '<path class="graph-edge" d="M' + x1 + ',' + y1 +
+          ' C' + (x1 + bend) + ',' + y1 + ' ' + (x2 - bend) + ',' + y2 + ' ' + x2 + ',' + y2 +
+          '" marker-end="url(#dag-arrow)"></path>';
+      }
+    }
+    svg += '</svg>';
+
+    var nodesHtml = '';
+    for (var pKey in pos) {
+      if (!Object.prototype.hasOwnProperty.call(pos, pKey)) continue;
+      var node = pos[pKey];
+      var nodeDeps = Array.isArray(node.task.dependsOn) ? node.task.dependsOn : [];
+      var meta = nodeDeps.length > 0
+        ? '← ' + shortLabel(nodeDeps.join(', '), 30)
+        : 'начальная задача';
+      nodesHtml += '<div class="graph-node' + statusClass(node.task.status) + '" style="left:' + node.x +
+        'px;top:' + node.y + 'px;width:' + NODE_W + 'px;height:' + NODE_H + 'px" title="' +
+        attr(node.task.name + (nodeDeps.length ? ' · зависит от: ' + nodeDeps.join(', ') : '')) + '">' +
+        '<span class="g-name">' + esc(shortLabel(node.task.name, 26)) + '</span>' +
+        '<span class="g-meta">' + esc(meta) + '</span></div>';
+    }
+
+    var scroll = document.getElementById('graph-scroll');
+    var scrollLeft = scroll ? scroll.scrollLeft : 0;
+    box.innerHTML = '<div class="graph-canvas" style="width:' + width + 'px;height:' + height + 'px">' +
+      svg + nodesHtml + '</div>';
+    if (scroll) scroll.scrollLeft = scrollLeft;
     graph.style.display = 'block';
   }
 
@@ -1889,13 +2065,27 @@ function renderPage(): string {
   // /api/metrics может быть перехвачен антивирусом; /api/summary — тот же
   // обработчик на случай, если блокировка привязана к имени URL.
   function loadMetricsJson() {
-    return fetch('/api/metrics', { cache: 'no-store' })
+    var primary = preferSummaryMetrics ? '/api/summary' : '/api/metrics';
+    return fetch(primary, { cache: 'no-store' })
       .then(readJson)
       .catch(function () {
+        if (!preferSummaryMetrics) {
+          // Антивирус может блокировать именно /api/metrics. Переключаемся
+          // на тот же обработчик под другим URL один раз и навсегда для страницы.
+          preferSummaryMetrics = true;
+          if (!metricsFallbackLogged) {
+            metricsFallbackLogged = true;
+            console.info('Дашборд: /api/metrics недоступен, использую /api/summary');
+          }
+        }
         return fetch('/api/summary', { cache: 'no-store' })
           .then(readJson)
           .catch(function (err) {
-            console.error('Дашборд: метрики недоступны', err);
+            // Логируем только первый сбой, чтобы не засорять консоль каждые 5 секунд.
+            if (!metricsFallbackLogged) {
+              metricsFallbackLogged = true;
+              console.error('Дашборд: метрики недоступны', err);
+            }
             return {};
           });
       });
