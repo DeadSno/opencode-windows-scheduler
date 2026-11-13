@@ -1,8 +1,7 @@
 // Тесты группировки задач матрицы для TUI.
 // Запуск: node test-jobs-view.mjs (после npm run build).
-const { groupJobsForDisplay, buildJobsView } = await import(
-  "./dist/shared/jobs-view.js"
-);
+const { groupJobsForDisplay, buildJobsView, nextJobSelection, formatJobLog } =
+  await import("./dist/shared/jobs-view.js");
 
 let passed = 0;
 let failed = 0;
@@ -97,6 +96,43 @@ check("ad-hoc задача без определения не считается
 check(
   "история без записи даёт idle",
   buildJobsView([{ taskName: "fresh" }], [], [])[0]?.status === "idle"
+);
+
+// Клавиатурная навигация по строкам панели.
+check(
+  "выбор идёт к следующей задаче",
+  nextJobSelection(rows, "alpha", 1) === "deploy"
+);
+check(
+  "выбор идёт к предыдущей задаче",
+  nextJobSelection(rows, "deploy", -1) === "alpha"
+);
+check(
+  "выбор зацикливается в конце",
+  nextJobSelection(rows, "matrix-parent [windows]", 1) === "alpha"
+);
+check(
+  "выбор зацикливается в начале",
+  nextJobSelection(rows, "alpha", -1) === "matrix-parent [windows]"
+);
+check(
+  "неизвестное имя начинает с первой строки",
+  nextJobSelection(rows, "missing", 1) === "alpha"
+);
+check("пустой список не даёт выбора", nextJobSelection([], "alpha", 1) === undefined);
+
+// Превью лога для диалога TUI.
+const manyLines = Array.from({ length: 60 }, (_, i) => `line-${i + 1}`).join("\n");
+const preview = formatJobLog(manyLines, undefined, 5);
+check("лог обрезается до последних строк", preview === "line-56\nline-57\nline-58\nline-59\nline-60");
+check(
+  "пустой лог использует текст ошибки",
+  formatJobLog("", "Задача ещё не запускалась") === "Задача ещё не запускалась"
+);
+check("пустой лог без ошибки даёт пояснение", formatJobLog("", undefined) === "Лог пуст.");
+check(
+  "CRLF нормализуется",
+  formatJobLog("первая\r\nвторая", undefined, 10) === "первая\nвторая"
 );
 
 if (failed > 0) {

@@ -70,6 +70,40 @@ export function groupJobsForDisplay(jobs: readonly JobView[]): JobDisplayRow[] {
 }
 
 /**
+ * Перемещает выбор по строкам панели с зацикливанием.
+ * Возвращает имя задачи, которое нужно выделить, либо undefined для пустого списка.
+ */
+export function nextJobSelection(
+  rows: readonly JobDisplayRow[],
+  currentName: string | undefined,
+  delta: number
+): string | undefined {
+  if (rows.length === 0) return undefined
+  const current = currentName?.trim().toLowerCase()
+  let index = rows.findIndex((row) => row.job.name.toLowerCase() === current)
+  if (index === -1) index = delta > 0 ? -1 : 0
+  const step = delta === 0 ? 1 : delta
+  index = ((index + step) % rows.length + rows.length) % rows.length
+  return rows[index]?.job.name
+}
+
+/**
+ * Готовит текст лога для диалога TUI: оставляет последние строки и
+ * подставляет пояснение, если лога ещё нет.
+ */
+export function formatJobLog(
+  logs: string | undefined,
+  error: string | undefined,
+  maxLines = 40
+): string {
+  const source = logs?.trim() ? logs : error?.trim()
+  if (!source) return "Лог пуст."
+  const limit = Math.max(1, Math.min(Math.floor(maxLines), 200))
+  const lines = source.replace(/\r\n/g, "\n").split("\n")
+  return lines.slice(-limit).join("\n")
+}
+
+/**
  * Возвращает символ статуса задачи для отображения в панелях TUI и GUI.
  * Общая логика для обоих рантаймов.
  */

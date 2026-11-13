@@ -1,14 +1,17 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
 import { getSchedulerBackend } from "./core/scheduler/index"
+import { getTaskLogs } from "./core/scheduler/logs"
 import {
+  formatJobLog,
   getJobsView,
   groupJobsForDisplay,
+  nextJobSelection,
   statusIcon,
   type JobView,
 } from "./shared/jobs-view"
 
-type JobAction = "run" | "pause" | "resume"
+type JobAction = "run" | "pause" | "resume" | "log"
 
 /**
  * TUI-часть плагина: панель "Планировщик Windows" в боковой панели терминала.
@@ -35,7 +38,10 @@ export default Plugin.define({
     // могут держать разные копии solid-js, и реактивность не свяжется.
     // store из ctx.storage — штатный способ отдавать данные в render.
     const [state, setState] = ctx.storage.store("jobs", {
-      initial: { jobs: initialJobs },
+      initial: {
+        jobs: initialJobs,
+        selected: groupJobsForDisplay(initialJobs)[0]?.job.name ?? "",
+      },
     })
 
     let disposed = false
@@ -46,6 +52,12 @@ export default Plugin.define({
         if (disposed) return
         await setState((draft) => {
           draft.jobs = jobs
+          // Сохраняем выбор между обновлениями; если задача исчезла,
+          // выделяем первую строку, чтобы клавиатурные команды оставались рабочими.
+          const stillExists = jobs.some((job) => job.name === draft.selected)
+          if (!stillExists) {
+            draft.selected = groupJobsForDisplay(jobs)[0]?.job.name ?? ""
+          }
         })
       } catch {
         // Планировщик может быть временно недоступен (например, нет прав
@@ -53,8 +65,48 @@ export default Plugin.define({
       }
     }
 
+    async function showLog(job: JobView): Promise<void> {
+      try {
+        const result = await getTaskLogs(job.name, 200)
+        await ctx.ui.dialog.alert({
+          title: `Лог: ${job.name}`,
+          message: formatJobLog(result.logs, result.error, 40),
+        })
+      } catch (err) {
+        ctx.ui.toast.show({
+          title: "Планировщик Windows",
+          message: `Не удалось прочитать лог «${job.name}»: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          variant: "error",
+        })
+      }
+    }
+
+    /** Перемещает выделение по видимому списку задач. */
+    async function moveSelection(delta: number): Promise<void> {
+      const name = nextJobSelection(
+        groupJobsForDisplay(state.jobs),
+        state.selected,
+        delta
+      )
+      if (!name || disposed) return
+      await setState((draft) => {
+        draft.selected = name
+      })
+    }
+
+    async function openSelected(): Promise<void> {
+      const job = state.jobs.find((item) => item.name === state.selected)
+      if (job) await openActions(job)
+    }
+
     async function runAction(job: JobView, action: JobAction): Promise<void> {
       try {
+        if (action === "log") {
+          await showLog(job)
+          return
+        }
         const backend = getSchedulerBackend()
         if (action === "run") {
           const result = await backend.runTask(job.name)
@@ -113,6 +165,11 @@ export default Plugin.define({
           description: job.paused
             ? "Снять задачу с паузы в планировщике ОС"
             : "Приостановить запуски в планировщике ОС",
+        })
+        options.push({
+          title: "📜 Показать лог",
+          value: "log",
+          description: "Последние 40 строк вывода задачи",
         })
 
         const action = await ctx.ui.dialog.select<JobAction>({
@@ -191,6 +248,36 @@ export default Plugin.define({
             void refresh()
           },
         },
+        {
+          id: "opencode-windows-scheduler.previous",
+          title: "Планировщик: предыдущая задача",
+          group: "Планировщик Windows",
+          palette: true,
+          bind: "ctrl+shift+up",
+          run: () => {
+            void moveSelection(-1)
+          },
+        },
+        {
+          id: "opencode-windows-scheduler.next",
+          title: "Планировщик: следующая задача",
+          group: "Планировщик Windows",
+          palette: true,
+          bind: "ctrl+shift+down",
+          run: () => {
+            void moveSelection(1)
+          },
+        },
+        {
+          id: "opencode-windows-scheduler.open-selected",
+          title: "Планировщик: действия с выбранной задачей",
+          group: "Планировщик Windows",
+          palette: true,
+          bind: "ctrl+shift+enter",
+          run: () => {
+            void openSelected()
+          },
+        },
       ],
     }))
 
@@ -212,6 +299,7 @@ export default Plugin.define({
           ) : (
             groupJobsForDisplay(state.jobs).map(({ job, depth }) => (
               <text onMouseDown={() => void openActions(job)}>
+                {state.selected === job.name ? "› " : "  "}
                 {"  ".repeat(depth)}
                 {depth > 0 ? "↳ " : job.isMatrixParent ? "▣ " : ""}
                 {statusIcon(job.status)} {job.name}
@@ -220,7 +308,8 @@ export default Plugin.define({
               </text>
             ))
           )}
-          <text>Клик по задаче — действия · Ctrl+Shift+J — меню</text>
+          <text>Клик — действия · Ctrl+Shift+J — меню</text>
+          <text>Ctrl+Shift+↑/↓ — выбор · Ctrl+Shift+Enter — открыть</text>
         </box>
       ),
     })
