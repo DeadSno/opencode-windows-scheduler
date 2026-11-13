@@ -309,15 +309,20 @@ export async function startDashboardServer(
         }
 
         // Порт занят чужим или старым процессом: пробуем снять зомби
-        // (только node/bun этого плагина) и один раз повторить bind.
+        // (только node/bun этого плагина) и повторить bind.
         if (port !== 0 && (await tryFreeZombiePort(port))) {
-          try {
-            const server = await listenOn(port, deps);
-            running = { server, port };
-            console.log(`[windows-scheduler] Веб-дашборд запущен: http://localhost:${port}`);
-            return { port };
-          } catch {
-            // Не вышло — идём к следующему порту.
+          // SIGKILL асинхронный: на POSIX процесс может ещё какое-то время
+          // держать сокет, поэтому сначала ждём освобождения порта.
+          const freed = await waitForPortFree(port, 3000);
+          if (freed) {
+            try {
+              const server = await listenOn(port, deps);
+              running = { server, port };
+              console.log(`[windows-scheduler] Веб-дашборд запущен: http://localhost:${port}`);
+              return { port };
+            } catch {
+              // Не вышло — идём к следующему порту.
+            }
           }
         }
         // Чужой сервис — пробуем запасной порт.
@@ -394,6 +399,17 @@ async function tryFreeZombiePort(port: number): Promise<boolean> {
   }
 
   return killed;
+}
+
+/** Ждёт, пока порт освободится (POSIX: убитый процесс отпускает сокет не синхронно). */
+async function waitForPortFree(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pids = await findListeningPids(port);
+    if (pids.length === 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return false;
 }
 
 /** Возвращает PID'ы процессов, слушающих указанный TCP-порт. */
