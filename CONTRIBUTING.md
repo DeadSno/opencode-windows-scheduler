@@ -6,7 +6,7 @@ Thanks for taking the time to contribute! This project is MIT-licensed and free 
 
 - **Bug reports** — open an issue with OS, Node version, plugin version, steps to reproduce and the relevant log excerpt.
 - **Feature requests** — describe the workflow you want to automate, not only the feature. See [ROADMAP-STRATEGY.md](ROADMAP-STRATEGY.md) for the direction.
-- **Docs and recipes** — English docs are primary; Russian docs live in `README.ru.md` and must stay in sync.
+- **Docs and recipes** — English docs are primary; Russian docs live in `docs/README.ru.md` and must stay in sync.
 - **Code** — see below.
 
 ## Development setup

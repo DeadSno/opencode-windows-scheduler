@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-13
+
+### Changed
+
+- README переписан под OpenCode v2: установка через `plugins` и `opencode plugin add` (ключ `plugin` в конфиге устарел), добавлены FAQ, бейдж загрузок и ссылка на CROSS_PLATFORM.md, исправлено число тестовых сюит (26).
+- Русский README перенесён в `docs/README.ru.md` и синхронизирован с английским: одноразовые запуски, непрерывность сессий, webhooks, Prometheus/OTLP, матричные сборки, FAQ.
+- `package.json`: описание и ключевые слова расширены для поиска (OpenCode v2, планировщик, оркестрация, DAG, матрицы, Quality Gates, наблюдаемость).
+
+### Fixed
+
+- Страница пакета на npm показывала устаревший русский README: npm выбирал `README.ru.md` вместо `README.md`. Теперь в корне только английский README, npm отдаёт актуальный текст.
+
 ## [1.2.2] - 2026-11-13
 
 ### Fixed

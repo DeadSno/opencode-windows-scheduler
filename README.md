@@ -1,13 +1,14 @@
 # opencode-windows-scheduler
 
-> Local-first orchestration for AI agent jobs in OpenCode v2 — cron, DAG pipelines, matrix fan-out, quality gates and observability. Free and open source (MIT).
+> OpenCode v2 plugin for scheduling and orchestrating AI agent jobs — cron, one-shot runs, DAG pipelines, matrix builds, quality gates, SQLite history and a local web dashboard. Runs on Windows, macOS and Linux. Free and open source (MIT).
 
 [![CI](https://github.com/DeadSno/opencode-windows-scheduler/actions/workflows/ci.yml/badge.svg)](https://github.com/DeadSno/opencode-windows-scheduler/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/opencode-windows-scheduler.svg)](https://www.npmjs.com/package/opencode-windows-scheduler)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-windows-scheduler.svg)](https://www.npmjs.com/package/opencode-windows-scheduler)
 [![license](https://img.shields.io/npm/l/opencode-windows-scheduler.svg)](LICENSE)
 [![node](https://img.shields.io/node/v/opencode-windows-scheduler.svg)](package.json)
 
-Русская версия: [README.ru.md](README.ru.md).
+Русская версия: [docs/README.ru.md](docs/README.ru.md).
 
 ---
 
@@ -46,14 +47,15 @@ Want to see it without installing OpenCode? `node scripts/demo-dashboard.mjs` st
 Requires OpenCode v2 and Node.js 20+.
 
 ```bash
-npm install -g opencode-windows-scheduler
+opencode plugin add opencode-windows-scheduler
 ```
 
-Add the plugin to `opencode.jsonc`:
+Or add the plugin to `opencode.jsonc` manually:
 
 ```jsonc
 {
-  "plugin": ["opencode-windows-scheduler"],
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-windows-scheduler"],
   "experimental": {
     "schedules": false
   }
@@ -61,6 +63,12 @@ Add the plugin to `opencode.jsonc`:
 ```
 
 `experimental.schedules: false` disables the built-in OpenCode scheduler so the agent does not confuse built-in job tools with this plugin's tools. Restart OpenCode after changing the config.
+
+Alternatively, install globally with npm:
+
+```bash
+npm install -g opencode-windows-scheduler
+```
 
 From source:
 
@@ -163,7 +171,7 @@ Job wrappers run `opencode run` in the task working directory, so project MCP se
 npm install
 npm run build        # tsc
 npm run build:gui    # vite
-npm test             # 17 test suites, 500+ checks
+npm test             # 26 test suites, 500+ checks
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
@@ -173,6 +181,24 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — process model, modules, backends, data model.
 - [docs/FEATURES.md](docs/FEATURES.md) — full feature catalog with examples.
 - [docs/MIGRATION.md](docs/MIGRATION.md) — moving from cron, systemd, launchd or Task Scheduler.
+- [CROSS_PLATFORM.md](CROSS_PLATFORM.md) — Windows / macOS / Linux differences and backends.
+
+## FAQ
+
+**Does it work when OpenCode is closed?**
+Yes. Jobs are registered with the native OS scheduler, so they run without an open OpenCode window.
+
+**Which platforms are supported?**
+Windows (Task Scheduler), macOS (launchd) and Linux (crontab). Backend differences are documented in [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
+
+**Where does my data go?**
+Nowhere. History, logs, metrics and settings are stored locally in SQLite. No telemetry, no accounts, no cloud.
+
+**How is this different from `experimental.schedules`?**
+The built-in scheduler runs jobs while OpenCode is open. This plugin uses the native OS scheduler and adds DAG pipelines, matrix builds, quality gates, webhooks and observability.
+
+**Can jobs run in other repositories?**
+Yes. Workspaces point at project paths, and a matrix build runs one template across several workspaces at once.
 
 ## Roadmap
 
