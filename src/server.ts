@@ -45,7 +45,7 @@ const IS_WINDOWS = process.platform === "win32";
  * Имена процессов, которые считаем «зомби» от прошлых запусков плагина.
  * На Windows процессы называются node.exe / bun.exe, на POSIX — node / bun.
  */
-const ZOMBIE_IMAGE_NAMES = new Set(["node", "node.exe", "bun", "bun.exe"]);
+const ZOMBIE_IMAGE_NAMES = new Set(["node", "nodejs", "node.exe", "bun", "bun.exe"]);
 
 /** Маркер-заголовок: по нему узнаём «свой» дашборд, уже слушающий порт. */
 const DASHBOARD_HEADER = "x-plugin-dashboard";
@@ -499,15 +499,26 @@ async function getProcessInfoPosix(
   pid: number
 ): Promise<{ name: string; commandLine: string } | null> {
   try {
-    const [{ stdout: commOut }, { stdout: argsOut }] = await Promise.all([
-      execFileAsync("ps", ["-p", String(pid), "-o", "comm="], { windowsHide: true }),
-      execFileAsync("ps", ["-p", String(pid), "-o", "args="], { windowsHide: true }),
-    ]);
-    const comm = commOut.trim();
-    if (!comm) return null;
-    // comm — путь к бинарнику; для сопоставления с ZOMBIE_IMAGE_NAMES нужно имя.
-    const name = comm.split(/[\\/]/).pop() || comm;
-    return { name, commandLine: argsOut.trim() };
+    // NOTE: на Linux у Node главный поток помечен как "MainThread", поэтому
+    // имя берём из argv[0] командной строки (это полный путь к бинарнику),
+    // а comm используем только как запасной вариант.
+    const { stdout: argsOut } = await execFileAsync("ps", ["-p", String(pid), "-o", "args="], {
+      windowsHide: true,
+    });
+    const args = argsOut.trim();
+    const argv0 = args.split(/\s+/)[0]?.replace(/^["']|["']$/g, "") ?? "";
+    let name = argv0.split(/[\\/]/).pop() ?? "";
+
+    if (!name) {
+      const { stdout: commOut } = await execFileAsync("ps", ["-p", String(pid), "-o", "comm="], {
+        windowsHide: true,
+      });
+      const comm = commOut.trim();
+      if (!comm) return null;
+      name = comm.split(/[\\/]/).pop() || comm;
+    }
+
+    return { name, commandLine: args };
   } catch {
     return null;
   }
