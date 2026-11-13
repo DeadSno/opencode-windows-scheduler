@@ -88,6 +88,14 @@ interface Job {
     status: string
     message: string
   } | null
+  /** IANA-часовой пояс задачи (Спринт 19); null — системный. */
+  timezone?: string | null
+  /** Окно запуска: начало "HH:MM" (Спринт 19). */
+  notBefore?: string | null
+  /** Окно запуска: конец "HH:MM" (может быть меньше notBefore). */
+  notAfter?: string | null
+  /** Пауза до даты (ISO) — задача включится автоматически. */
+  pausedUntil?: string | null
 }
 
 /** Пользовательский шаблон, сохранённый в templates.json. */
@@ -450,6 +458,10 @@ export default Plugin.define({
     // Триггеры (cron / file / mcp-event) и рабочая директория
     const [triggerType, setTriggerType] = createSignal<"cron" | "file" | "mcp-event">("cron")
     const [watchPath, setWatchPath] = createSignal("")
+    // Часовой пояс и окно запуска (Спринт 19). Пусто = системный пояс / без окна.
+    const [timezone, setTimezone] = createSignal("")
+    const [notBefore, setNotBefore] = createSignal("")
+    const [notAfter, setNotAfter] = createSignal("")
     const [mcpServer, setMcpServer] = createSignal("")
     const [mcpEventName, setMcpEventName] = createSignal("")
     const [mcpFilter, setMcpFilter] = createSignal("")
@@ -776,6 +788,9 @@ export default Plugin.define({
             : "cron"
         )
         setWatchPath(t.watchPath ?? "")
+        setTimezone(t.timezone ?? "")
+        setNotBefore(t.notBefore ?? "")
+        setNotAfter(t.notAfter ?? "")
         setMcpServer(t.mcpEvent?.server ?? "")
         setMcpEventName(t.mcpEvent?.event ?? "")
         setMcpFilter(t.mcpEvent?.filter ?? "")
@@ -834,6 +849,9 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          timezone: (timezone() || "").trim() || undefined,
+          notBefore: (notBefore() || "").trim() || undefined,
+          notAfter: (notAfter() || "").trim() || undefined,
           mcpEvent:
             triggerType() === "mcp-event"
               ? {
@@ -920,6 +938,10 @@ export default Plugin.define({
           triggerType: (t.triggerType ?? "cron") as "cron" | "file" | "mcp-event",
           mcpEvent: t.mcpEvent ?? undefined,
           watchPath: t.watchPath ?? undefined,
+          timezone: t.timezone ?? undefined,
+          notBefore: t.notBefore ?? undefined,
+          notAfter: t.notAfter ?? undefined,
+          pausedUntil: t.pausedUntil ?? undefined,
           workingDirectory: t.workingDirectory ?? undefined,
           workspaceId: t.workspaceId ?? undefined,
           workspaceName: t.workspaceName ?? undefined,
@@ -1002,6 +1024,9 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          timezone: (timezone() || "").trim() || undefined,
+          notBefore: (notBefore() || "").trim() || undefined,
+          notAfter: (notAfter() || "").trim() || undefined,
           mcpEvent:
             triggerType() === "mcp-event"
               ? {
@@ -1043,6 +1068,9 @@ export default Plugin.define({
         setAfterScript("")
         setTriggerType("cron")
         setWatchPath("")
+    setTimezone("")
+    setNotBefore("")
+    setNotAfter("")
         setMcpServer("")
         setMcpEventName("")
         setMcpFilter("")
@@ -1250,6 +1278,9 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          timezone: (timezone() || "").trim() || undefined,
+          notBefore: (notBefore() || "").trim() || undefined,
+          notAfter: (notAfter() || "").trim() || undefined,
           mcpEvent:
             triggerType() === "mcp-event"
               ? {
@@ -1284,6 +1315,9 @@ export default Plugin.define({
         setAfterScript("")
         setTriggerType("cron")
         setWatchPath("")
+    setTimezone("")
+    setNotBefore("")
+    setNotAfter("")
         setMcpServer("")
         setMcpEventName("")
         setMcpFilter("")
@@ -1321,6 +1355,9 @@ export default Plugin.define({
       setAfterScript(job.afterScript ?? "")
       setTriggerType(job.triggerType ?? "cron")
       setWatchPath(job.watchPath ?? "")
+      setTimezone(job.timezone ?? "")
+      setNotBefore(job.notBefore ?? "")
+      setNotAfter(job.notAfter ?? "")
       setMcpServer(job.mcpEvent?.server ?? "")
       setMcpEventName(job.mcpEvent?.event ?? "")
       setMcpFilter(job.mcpEvent?.filter ?? "")
@@ -1460,6 +1497,15 @@ export default Plugin.define({
               )}
               {job.watchPath && (
                 <span title={`Отслеживание файла: ${job.watchPath}`} style="font-size:13px;flex-shrink:0;cursor:help">👁️</span>
+              )}
+              {job.timezone && (
+                <span title={`Часовой пояс задачи: ${job.timezone}`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #64d2ff;color:#64d2ff;background:rgba(100,210,255,0.12)">🌍 {job.timezone}</span>
+              )}
+              {job.notBefore && job.notAfter && (
+                <span title={`Окно запуска: ${job.notBefore}–${job.notAfter}. Вне окна запуск переносится на его открытие.`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #bf5af2;color:#bf5af2;background:rgba(191,90,242,0.12)">🪟 {job.notBefore}–{job.notAfter}</span>
+              )}
+              {job.pausedUntil && (
+                <span title={`Пауза до ${new Date(job.pausedUntil).toLocaleString()} — задача включится автоматически.`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #ffd60a;color:#ffd60a;background:rgba(255,214,10,0.12)">⏸ до {new Date(job.pausedUntil).toLocaleDateString()}</span>
               )}
               {(job.beforeScript || job.afterScript) && (
                 <span
@@ -2446,6 +2492,53 @@ export default Plugin.define({
                 {cronError() && (
                   <div style="display:block;max-height:80px;overflow-y:auto;margin-top:8px;padding:8px;background:#2a1113;border:1px solid #5a1d21;border-radius:6px;font-size:11px;line-height:1.4;color:#ff6b6b;white-space:pre-wrap;word-break:break-word">{cronError()}</div>
                 )}
+                <div style="display:block;width:100%;margin-top:12px">
+                  <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Часовой пояс (IANA)</label>
+                  <input
+                    type="text"
+                    list="iana-timezones"
+                    value={timezone() || ""}
+                    onInput={(e) => setTimezone(e.currentTarget.value)}
+                    placeholder="Пусто — системный пояс"
+                    style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                  />
+                  <datalist id="iana-timezones">
+                    <option value="Europe/Moscow" />
+                    <option value="Europe/London" />
+                    <option value="Europe/Berlin" />
+                    <option value="America/New_York" />
+                    <option value="America/Los_Angeles" />
+                    <option value="Asia/Almaty" />
+                    <option value="Asia/Tokyo" />
+                    <option value="UTC" />
+                  </datalist>
+                  <div style="display:block;margin-top:6px;font-size:11px;color:#808080">
+                    Другая зона — задача будится каждую минуту, cron проверяется с учётом пояса.
+                  </div>
+                </div>
+                <div style="display:block;width:100%;margin-top:12px">
+                  <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Окно запуска (необязательно)</label>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <input
+                      type="time"
+                      value={notBefore() || ""}
+                      onInput={(e) => setNotBefore(e.currentTarget.value)}
+                      title="Начало окна"
+                      style="display:block;flex:1;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                    />
+                    <span style="color:#808080;font-size:12px">—</span>
+                    <input
+                      type="time"
+                      value={notAfter() || ""}
+                      onInput={(e) => setNotAfter(e.currentTarget.value)}
+                      title="Конец окна (может быть меньше начала)"
+                      style="display:block;flex:1;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                    />
+                  </div>
+                  <div style="display:block;margin-top:6px;font-size:11px;color:#808080">
+                    Вне окна запуск переносится на его открытие, а не пропускается. Например 22:00 — 06:00.
+                  </div>
+                </div>
               </div>
 
               <div style="display:block;width:100%;margin-bottom:12px">
@@ -2747,7 +2840,7 @@ export default Plugin.define({
                 </button>
                 {isEditing && (
                   <button
-                    onClick={() => { setEditingJob(null); setName(""); setSchedule("* * * * *"); setPrompt(""); setModel(""); setPriority(DEFAULT_PRIORITY); setRetryCount(0); setRetryDelay(60); setQualityGate(""); setDependsOn([]); setBeforeScript(""); setAfterScript(""); setTriggerType("cron"); setWatchPath(""); setMcpServer(""); setMcpEventName(""); setMcpFilter(""); setWorkingDirectory(""); setWorkspaceId(""); setAllowedTools([]); setDeniedTools([]); resetMatrixForm(); setCronPreset("* * * * *"); setCronError("") }}
+                    onClick={() => { setEditingJob(null); setName(""); setSchedule("* * * * *"); setPrompt(""); setModel(""); setPriority(DEFAULT_PRIORITY); setRetryCount(0); setRetryDelay(60); setQualityGate(""); setDependsOn([]); setBeforeScript(""); setAfterScript(""); setTriggerType("cron"); setWatchPath(""); setTimezone(""); setNotBefore(""); setNotAfter(""); setMcpServer(""); setMcpEventName(""); setMcpFilter(""); setWorkingDirectory(""); setWorkspaceId(""); setAllowedTools([]); setDeniedTools([]); resetMatrixForm(); setCronPreset("* * * * *"); setCronError("") }}
                     style="background:transparent;border:1px solid #333;border-radius:6px;padding:8px 16px;color:#ff3b30;cursor:pointer;font-size:13px;width:100%"
                   >
                     Отмена

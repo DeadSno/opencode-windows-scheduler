@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { PLUGIN_DIR, LOG_DIR, WRAPPER_DIR } from "../types.js";
+import type { ScheduleGateSpec } from "./schedule-v2.js";
 
 /**
  * Путь к единому generic-обёртке PowerShell, которая реализует запуск opencode run
@@ -467,6 +468,8 @@ export function lockFilePath(taskName: string): string {
  * @param workspaceName  имя workspace для git-контекста в логе (опционально)
  * @param allowedTools   список разрешённых инструментов (спринт 14, опционально)
  * @param deniedTools    список запрещённых инструментов (спринт 14, опционально)
+ * @param scheduleGate   гейт расписания (спринт 19): проверка cron в таймзоне
+ *                       и окна запуска перед стартом PowerShell-обёртки.
  */
 export async function writeWrapperCmd(
   sanitizedName: string,
@@ -483,7 +486,8 @@ export async function writeWrapperCmd(
   afterScript?: string,
   workspaceName?: string,
   allowedTools?: string[],
-  deniedTools?: string[]
+  deniedTools?: string[],
+  scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string }
 ): Promise<string> {
   await fs.mkdir(WRAPPER_DIR, { recursive: true });
   const cmdPath = path.join(WRAPPER_DIR, `run-${sanitizedName}.cmd`);
@@ -564,6 +568,35 @@ export async function writeWrapperCmd(
   // MCP: opencode run подхватывает opencode.json из рабочей директории.
   const effectiveWorkdir = workdir?.trim() || process.cwd();
   lines.push(`cd /d "${effectiveWorkdir}"`);
+
+  // Спринт 19: гейт расписания ДО PowerShell. Проверяет, что cron реально
+  // сработал сейчас (для poll-режима и чужих таймзон), и при необходимости
+  // переносит запуск до открытия окна notBefore..notAfter.
+  // Exit 3 — «не сейчас», выходим тихо, не считая это запуском задачи.
+  if (scheduleGate?.gateFile) {
+    const gateArgs = [`node "${scheduleGate.gateFile}"`];
+    if (scheduleGate.cron?.trim()) {
+      gateArgs.push(`--cron "${scheduleGate.cron.replace(/[\r\n"]+/g, " ").trim()}"`);
+    }
+    if (scheduleGate.tz?.trim()) {
+      gateArgs.push(`--tz "${scheduleGate.tz.trim()}"`);
+    }
+    if (scheduleGate.notBefore?.trim()) {
+      gateArgs.push(`--not-before ${scheduleGate.notBefore.trim()}`);
+    }
+    if (scheduleGate.notAfter?.trim()) {
+      gateArgs.push(`--not-after ${scheduleGate.notAfter.trim()}`);
+    }
+    if (scheduleGate.deferFile?.trim()) {
+      gateArgs.push(`--defer-file "${scheduleGate.deferFile.trim()}"`);
+    }
+    // append к логу задачи, чтобы перенос/пропуск был виден в истории запусков
+    if (logFile?.trim()) {
+      gateArgs.push(`>> "${logFile.trim()}" 2>&1`);
+    }
+    lines.push(gateArgs.join(" "));
+    lines.push(`if "%errorlevel%"=="3" exit /b 0`);
+  }
 
   lines.push(psArgs.join(" "));
 

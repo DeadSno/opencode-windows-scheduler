@@ -7,7 +7,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { LockManager } from "./core/lock.js";
 import { LOCK_DIR, LOG_DIR, PLUGIN_DIR, sanitizeName } from "./types.js";
-import { convertCronToSchTasks, previousRunTime } from "./core/cron-to-schtasks.js";
+import { parseCron, buildScheduleGate, isValidIanaTimeZone, validateLaunchWindow, prevRun } from "./core/schedule-v2.js";
 import { ensureWrapper, writePromptFile, writeWrapperCmd, lockFilePath } from "./core/ps-wrapper.js";
 import { getSchedulerBackend } from "./core/scheduler/index.js";
 import { SCHEDULER_SKILL_ID, loadSchedulerSkill } from "./skill.js";
@@ -55,7 +55,7 @@ import { startDashboardServer, closeDashboardServer, getDashboardPort } from "./
 import { closeDb, initDb } from "./db/index.js";
 import { migrateJsonToDb } from "./db/migrate.js";
 import { checkJsonBackups, recoverInterruptedRuns } from "./db/recovery.js";
-import { getTask, listMatrixClones } from "./db/tasks-repo.js";
+import { getTask, listMatrixClones, saveTask } from "./db/tasks-repo.js";
 import {
   addWorkspace,
   deleteWorkspace,
@@ -84,6 +84,24 @@ const recorderPath = (() => {
   console.warn(
     "[windows-scheduler] Не найден собранный record-history.js: " +
       `${distPath}. История/метрики не будут записываться. Выполните npm run build.`
+  );
+  return distPath;
+})();
+
+/**
+ * Путь к гейту расписания (dist/core/schedule-gate.js). Обёртка запускает его
+ * перед opencode и выходит, если cron не сработал или запуск перенесён.
+ */
+const gatePath = (() => {
+  const resolved = require.resolve("./core/schedule-gate.js");
+  if (!resolved.endsWith(".ts")) return resolved;
+  const distPath = resolved
+    .replace(/([\\/])src([\\/])/, "$1dist$2")
+    .replace(/\.ts$/, ".js");
+  if (existsSync(distPath)) return distPath;
+  console.warn(
+    "[windows-scheduler] Не найден собранный schedule-gate.js: " +
+      `${distPath}. Гейт расписания не будет проверяться. Выполните npm run build.`
   );
   return distPath;
 })();
@@ -149,8 +167,24 @@ export const scheduleTaskSchema = z.object({
   schedule: z
     .string()
     .describe(
-      "5-field cron expression (minute hour day-of-month month day-of-week). Supported patterns: * * * * *, */N * * * *, M H * * *, M H * * D."
+      "Cron expression (5 fields: minute hour day-of-month month day-of-week). Supports ranges, lists, */N steps, month/weekday names, @every 15m|2h|1d, L (last day of month) and FRI#3 (third Friday). Expressions schtasks cannot express are checked every minute inside the wrapper."
     ),
+  timezone: z
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone of the schedule, e.g. Europe/Moscow. Defaults to the system timezone. A zone different from the system one is evaluated by the wrapper (poll mode)."
+    ),
+  notBefore: z
+    .string()
+    .optional()
+    .describe(
+      "Launch window start in HH:MM (24h). Together with notAfter: a run outside the window is postponed to the next window opening, not skipped."
+    ),
+  notAfter: z
+    .string()
+    .optional()
+    .describe("Launch window end in HH:MM (24h). May be earlier than notBefore (window crosses midnight)."),
   prompt: z
     .string()
     .describe("Prompt passed to the agent on every run."),
@@ -268,7 +302,19 @@ export const updateTaskSchema = z.object({
   schedule: z
     .string()
     .optional()
-    .describe("New 5-field cron expression. Keeps the current value when omitted."),
+    .describe("New cron expression. Keeps the current value when omitted."),
+  timezone: z
+    .string()
+    .optional()
+    .describe("New IANA timezone. Empty string clears it (system timezone)."),
+  notBefore: z
+    .string()
+    .optional()
+    .describe("New launch window start HH:MM. Empty string clears the window."),
+  notAfter: z
+    .string()
+    .optional()
+    .describe("New launch window end HH:MM. Empty string clears the window."),
   prompt: z
     .string()
     .optional()
@@ -347,6 +393,12 @@ export const updateTaskSchema = z.object({
 
 const pauseTaskSchema = z.object({
   name: z.string().describe("Task name to pause."),
+  until: z
+    .string()
+    .optional()
+    .describe(
+      "Optional ISO date/time to resume automatically (e.g. 2026-12-01T09:00:00Z). The plugin re-enables the task at that moment."
+    ),
 });
 
 const resumeTaskSchema = z.object({
@@ -472,6 +524,9 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
     allowedTools,
     deniedTools,
     matrix,
+    timezone,
+    notBefore,
+    notAfter,
   } = args;
 
   try {
@@ -497,7 +552,12 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
       workspaceId,
       allowedTools,
       deniedTools,
-      matrix
+      matrix,
+      undefined,
+      "create",
+      timezone,
+      notBefore,
+      notAfter
     );
   } catch (err: any) {
     return {
@@ -530,6 +590,9 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
         nextTaskOnSuccess: nextTaskOnSuccess?.trim() || null,
         nextTaskOnError: nextTaskOnError?.trim() || null,
         triggerType: triggerType ?? "cron",
+        timezone: timezone?.trim() || null,
+        notBefore: notBefore?.trim() || null,
+        notAfter: notAfter?.trim() || null,
         mcpEvent: mcpEvent ?? null,
         workingDirectory: effectiveWorkdir,
         workspaceId: workspace?.id ?? null,
@@ -625,7 +688,12 @@ async function cancelMatrixRun(
         clone.allowedTools,
         clone.deniedTools,
         undefined,
-        definition.name
+        definition.name,
+        "create",
+        clone.timezone,
+        clone.notBefore,
+        clone.notAfter,
+        clone.pausedUntil
       );
     } catch (err: any) {
       warnings.push(
@@ -842,6 +910,9 @@ async function updateTaskFromInput(
   const schedule = clearableString(input.schedule ?? input.newSchedule, previous.schedule);
   const prompt = clearableString(input.prompt ?? input.newPrompt, previous.prompt);
   const triggerType = input.triggerType ?? previous.triggerType ?? "cron";
+  const timezone = clearableString(input.timezone, previous.timezone);
+  const notBefore = clearableString(input.notBefore, previous.notBefore);
+  const notAfter = clearableString(input.notAfter, previous.notAfter);
 
   if (triggerType === "cron" && !schedule) {
     return {
@@ -889,7 +960,11 @@ async function updateTaskFromInput(
       undefined,
       // Если задача была матрицей — синхронизируем клонов, а не
       // пересоздаём их с нуля (Спринт 17).
-      matrixWas && matrixNext ? "sync" : "create"
+      matrixWas && matrixNext ? "sync" : "create",
+      timezone,
+      notBefore,
+      notAfter,
+      previous.pausedUntil
     );
 
     // Матрица отключена при обновлении — убираем клонов и агрегатор.
@@ -918,7 +993,8 @@ const updateTaskExecute = wrapExecute<UpdateArgs>(async (args) => {
  */
 async function pauseOrResumeTask(
   name: string,
-  paused: boolean
+  paused: boolean,
+  until?: string
 ): Promise<{ success: boolean; message: string; affected: string[]; warnings: string[] }> {
   const trimmed = name.trim();
   const definition = getTask(trimmed);
@@ -929,6 +1005,29 @@ async function pauseOrResumeTask(
       affected: [],
       warnings: [],
     };
+  }
+
+  // Пауза до даты (Спринт 19): проверяем ISO-момент до каких-либо изменений.
+  let pausedUntil: string | undefined;
+  if (paused && until?.trim()) {
+    const parsed = Date.parse(until.trim());
+    if (Number.isNaN(parsed)) {
+      return {
+        success: false,
+        message: `Задача "${trimmed}": некорректная дата паузы "${until}". Нужен ISO-момент, например 2026-12-01T09:00:00Z.`,
+        affected: [],
+        warnings: [],
+      };
+    }
+    if (parsed <= Date.now()) {
+      return {
+        success: false,
+        message: `Задача "${trimmed}": дата паузы уже прошла.`,
+        affected: [],
+        warnings: [],
+      };
+    }
+    pausedUntil = new Date(parsed).toISOString();
   }
 
   const targets = definition.matrix
@@ -960,11 +1059,35 @@ async function pauseOrResumeTask(
     }
   }
 
+  // Фиксируем (или снимаем) автопродолжение в определении задачи. У матрицы
+  // родитель хранит pausedUntil за всех клонов — их включает авто-resume.
+  const definitionUpdates = paused
+    ? pausedUntil
+      ? { pausedUntil }
+      : undefined
+    : definition.pausedUntil
+      ? { pausedUntil: undefined }
+      : undefined;
+  if (definitionUpdates && affected.length > 0) {
+    try {
+      saveTask({ ...definition, ...definitionUpdates });
+    } catch (err: any) {
+      warnings.push(
+        `не удалось сохранить автопродолжение: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  const untilText = pausedUntil
+    ? ` до ${new Date(pausedUntil).toLocaleString()}`
+    : "";
   const verb = paused ? "поставлена на паузу" : "возобновлена";
   const message = definition.matrix
-    ? `Матрица "${trimmed}" ${verb}: ${affected.length} из ${targets.length} клонов.` +
+    ? `Матрица "${trimmed}" ${verb}${untilText}: ${affected.length} из ${targets.length} клонов.` +
       (warnings.length > 0 ? ` Ошибки: ${warnings.join("; ")}.` : "")
-    : `Задача "${trimmed}" ${verb}.` +
+    : `Задача "${trimmed}" ${verb}${untilText}.` +
       (warnings.length > 0 ? ` Ошибка: ${warnings.join("; ")}.` : "");
 
   return {
@@ -976,7 +1099,7 @@ async function pauseOrResumeTask(
 }
 
 const pauseTaskExecute = wrapExecute<PauseArgs>(async (args) => {
-  const result = await pauseOrResumeTask(args.name, true);
+  const result = await pauseOrResumeTask(args.name, true, args.until);
   return { content: JSON.stringify(result) };
 });
 
@@ -984,6 +1107,44 @@ const resumeTaskExecute = wrapExecute<ResumeArgs>(async (args) => {
   const result = await pauseOrResumeTask(args.name, false);
   return { content: JSON.stringify(result) };
 });
+
+/** Периодичность проверки автопродолжения задач (Спринт 19). */
+const PAUSED_UNTIL_CHECK_MS = 5 * 60 * 1000;
+
+/**
+ * Спринт 19: автопродолжение задач, поставленных на паузу до даты.
+ * Включает задачу в планировщике ОС и снимает `pausedUntil` из определения.
+ * Клоны матрицы не обрабатываются отдельно — за них отвечает родитель.
+ */
+async function resumeExpiredPauses(): Promise<void> {
+  const now = Date.now();
+  const definitions = await loadTaskDefinitions();
+  for (const definition of definitions) {
+    if (!definition.pausedUntil) continue;
+    if (definition.matrixParentId) continue;
+    const untilMs = Date.parse(definition.pausedUntil);
+    if (!Number.isFinite(untilMs) || untilMs > now) continue;
+
+    try {
+      const targets = definition.matrix
+        ? listMatrixClones(definition.name).map((clone) => clone.name)
+        : [definition.name];
+      for (const target of targets) {
+        await scheduler.resumeTask(target);
+      }
+      await saveTaskDefinition({ ...definition, pausedUntil: undefined });
+      console.log(
+        `[windows-scheduler] Автопродолжение: задача "${definition.name}" включена (пауза истекла).`
+      );
+    } catch (err: any) {
+      console.error(
+        `[windows-scheduler] Не удалось автопродолжить задачу "${definition.name}": ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+}
 
 /** get_history — история запусков с фильтрами по задаче и статусу. */
 const getHistoryExecute = wrapExecute<HistoryArgs>(async (args) => {
@@ -1270,6 +1431,26 @@ export default Plugin.define({
         );
       });
 
+    // Спринт 19: автопродолжение задач, поставленных на паузу до даты.
+    // Проверяем сразу при старте и далее раз в 5 минут, пока плагин жив.
+    void resumeExpiredPauses().catch((err: any) => {
+      console.error(
+        `[windows-scheduler] Не удалось проверить автопродолжение: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    });
+    const pausedUntilTimer = setInterval(() => {
+      void resumeExpiredPauses().catch((err: any) => {
+        console.error(
+          `[windows-scheduler] Не удалось проверить автопродолжение: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
+    }, PAUSED_UNTIL_CHECK_MS);
+    pausedUntilTimer.unref?.();
+
     // Инициализация блокировок: создаём директорию и очищаем зависшие lock-файлы (>24 ч).
     const lockManager = new LockManager(LOCK_DIR);
     await lockManager.initialize();
@@ -1293,16 +1474,18 @@ export default Plugin.define({
           // Catch-up имеет смысл только для cron-задач.
           if ((def.triggerType ?? "cron") !== "cron") continue;
           if (!def.schedule) continue;
-          const prevRun = previousRunTime(def.schedule, now);
-          if (!prevRun) continue;
-          const ageMs = now.getTime() - prevRun.getTime();
+          // Задача на паузе до даты — её включит авто-продолжение.
+          if (def.pausedUntil) continue;
+          const prev = prevRun(def.schedule, now, def.timezone);
+          if (!prev) continue;
+          const ageMs = now.getTime() - prev.getTime();
           if (ageMs < catchUpThresholdMs) continue;
 
           // Есть ли запись в истории после предполагаемого времени запуска?
           const ranAfter = history.some(
             (r) =>
               r.taskName.toLowerCase() === def.name.toLowerCase() &&
-              new Date(r.startedAt).getTime() >= prevRun.getTime()
+              new Date(r.startedAt).getTime() >= prev.getTime()
           );
           if (ranAfter) continue;
 
@@ -1522,6 +1705,9 @@ export default Plugin.define({
           allowedTools,
           deniedTools,
           matrix,
+          timezone,
+          notBefore,
+          notAfter,
         } = input as {
           name: string;
           schedule: string;
@@ -1544,6 +1730,9 @@ export default Plugin.define({
           allowedTools?: string[];
           deniedTools?: string[];
           matrix?: MatrixConfig;
+          timezone?: string;
+          notBefore?: string;
+          notAfter?: string;
         };
         try {
           await schedulerCreateTask(
@@ -1568,7 +1757,12 @@ export default Plugin.define({
             workspaceId,
             allowedTools,
             deniedTools,
-            matrix
+            matrix,
+            undefined,
+            "create",
+            timezone,
+            notBefore,
+            notAfter
           );
           return { success: true, message: `Задача "${name}" успешно создана.` };
         } catch (err: any) {
@@ -1720,8 +1914,8 @@ export default Plugin.define({
         };
       },
       pause_task: async (input: unknown) => {
-        const { name } = input as { name: string };
-        const result = await pauseOrResumeTask(name, true);
+        const { name, until } = input as { name: string; until?: string };
+        const result = await pauseOrResumeTask(name, true, until);
         return { success: result.success, message: result.message };
       },
       resume_task: async (input: unknown) => {
@@ -2115,7 +2309,12 @@ export default Plugin.define({
                 def.allowedTools,
                 def.deniedTools,
                 def.matrix,
-                def.matrixParentId
+                def.matrixParentId,
+                "create",
+                def.timezone,
+                def.notBefore,
+                def.notAfter,
+                def.pausedUntil
               );
               await saveTaskDefinition(def);
               imported.push(def.name);
@@ -2164,6 +2363,7 @@ export default Plugin.define({
     }
 
     return () => {
+      clearInterval(pausedUntilTimer);
       rpcRegistration.dispose();
       registration.dispose();
       void skillRegistration?.dispose();
@@ -2262,12 +2462,24 @@ async function schedulerCreateTask(
   matrix?: MatrixConfig,
   matrixParentId?: string,
   /** create — пересоздать клонов с нуля; sync — только diff (Спринт 17). */
-  matrixMode: "create" | "sync" = "create"
+  matrixMode: "create" | "sync" = "create",
+  /** IANA-зона задачи (Спринт 19). Не системная зона → poll-режим шлюза. */
+  timezone?: string,
+  /** Окно запуска: начало "HH:MM" (вне окна запуск переносится). */
+  notBefore?: string,
+  /** Окончание окна "HH:MM"; может быть меньше notBefore (через полночь). */
+  notAfter?: string,
+  /** Пауза до момента ISO; после него задача возобновляется автоматически. */
+  pausedUntil?: string
 ): Promise<void> {
   const normalizedModel = model?.trim() || undefined;
   const normalizedPriority = normalizePriority(priority);
   const normalizedBefore = beforeScript?.trim() || undefined;
   const normalizedAfter = afterScript?.trim() || undefined;
+  const normalizedTz = timezone?.trim() || undefined;
+  const normalizedNotBefore = notBefore?.trim() || undefined;
+  const normalizedNotAfter = notAfter?.trim() || undefined;
+  const normalizedPausedUntil = pausedUntil?.trim() || undefined;
   const normalizedMcpEvent =
     mcpEvent && mcpEvent.event?.trim()
       ? {
@@ -2358,15 +2570,44 @@ async function schedulerCreateTask(
   // расписание не используется вовсе.
   if (effectiveTriggerType === "cron") {
     try {
-      convertCronToSchTasks(schedule);
+      // Расширенная грамматика (Спринт 19): диапазоны, списки, шаги,
+      // имена месяцев/дней, @every, L и FRI#3.
+      parseCron(schedule);
     } catch (err: any) {
       throw new Error(err.message || String(err));
+    }
+    if (normalizedTz && !isValidIanaTimeZone(normalizedTz)) {
+      throw new Error(
+        `Задача "${name}": неизвестный часовой пояс "${normalizedTz}". ` +
+          `Укажите IANA-зону, например Europe/Moscow.`
+      );
+    }
+    const windowError = validateLaunchWindow(
+      normalizedNotBefore,
+      normalizedNotAfter
+    );
+    if (windowError) {
+      throw new Error(`Задача "${name}": ${windowError}`);
     }
   }
 
   const sanitized = sanitizeName(name);
   const lockFile = lockFilePath(sanitized);
   const logFile = path.join(LOG_DIR, `${sanitized}.log`);
+  // Шлюз расписания (Спринт 19): нужен только для cron в poll-режиме
+  // (нестандартный cron или чужая IANA-зона) либо при окне запуска.
+  const gate =
+    effectiveTriggerType === "cron"
+      ? buildScheduleGate(
+          schedule,
+          normalizedTz,
+          normalizedNotBefore,
+          normalizedNotAfter
+        )
+      : undefined;
+  const wrapperGate = gate
+    ? { ...gate, gateFile: gatePath, deferFile: `${lockFile}.defer` }
+    : undefined;
   // Workspace имеет приоритет над workingDirectory: одна задача = один repo
   // = один cwd. Мы не угадываем, куда мержить, и не смешиваем контексты.
   const normalizedWorkspaceId = workspaceId?.trim() || undefined;
@@ -2421,7 +2662,8 @@ async function schedulerCreateTask(
         normalizedAfter,
         workspace?.name,
         normalizedAllowedTools,
-        normalizedDeniedTools
+        normalizedDeniedTools,
+        wrapperGate
       );
     } else {
       wrapperPath = await writeBashWrapper({
@@ -2440,6 +2682,7 @@ async function schedulerCreateTask(
         workspaceName: workspace?.name,
         allowedTools: normalizedAllowedTools,
         deniedTools: normalizedDeniedTools,
+        scheduleGate: wrapperGate,
       });
     }
   } catch (err: any) {
@@ -2458,6 +2701,9 @@ async function schedulerCreateTask(
       logFile,
       model: normalizedModel,
       priority: normalizedPriority,
+      timezone: normalizedTz,
+      notBefore: normalizedNotBefore,
+      notAfter: normalizedNotAfter,
     });
   } catch (err: any) {
     throw new Error(err instanceof Error ? err.message : String(err));
@@ -2484,6 +2730,10 @@ async function schedulerCreateTask(
     nextTaskOnError,
     triggerType: effectiveTriggerType,
     watchPath: normalizedMatrix ? undefined : watchPath,
+    timezone: normalizedTz,
+    notBefore: normalizedNotBefore,
+    notAfter: normalizedNotAfter,
+    pausedUntil: normalizedPausedUntil,
     allowedTools: normalizedAllowedTools,
     deniedTools: normalizedDeniedTools,
     matrix: normalizedMatrix,
@@ -2540,7 +2790,12 @@ async function schedulerCreateTask(
         clone.allowedTools,
         clone.deniedTools,
         undefined,
-        name
+        name,
+        "create",
+        clone.timezone,
+        clone.notBefore,
+        clone.notAfter,
+        clone.pausedUntil
       );
     };
 
@@ -2700,6 +2955,10 @@ async function collectTasksView() {
       dependsOn: Array.isArray(def?.dependsOn) ? def.dependsOn : [],
       triggerType: def?.triggerType ?? "cron",
       watchPath: def?.watchPath ?? null,
+      timezone: def?.timezone ?? null,
+      notBefore: def?.notBefore ?? null,
+      notAfter: def?.notAfter ?? null,
+      pausedUntil: def?.pausedUntil ?? null,
       workingDirectory: workspace?.path ?? def?.workingDirectory ?? def?.workdir ?? null,
       workspaceId: workspace?.id ?? def?.workspaceId ?? null,
       workspaceName: workspace?.name ?? null,

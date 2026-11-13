@@ -97,19 +97,30 @@ export function zonedParts(date: Date, timeZone?: string): ZonedParts {
 export function wallToUtc(y: number, m: number, d: number, h: number, mi: number, timeZone?: string): Date | null {
   const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const target = Date.UTC(y, m - 1, d, h, mi);
+  const matches = (ms: number): boolean => {
+    const p = zonedParts(new Date(ms), tz);
+    return p.year === y && p.month === m && p.day === d && p.hour === h && p.minute === mi;
+  };
   let guess = target;
   for (let i = 0; i < 4; i += 1) {
     const p = zonedParts(new Date(guess), tz);
     const actual = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
     const delta = target - actual;
-    if (delta === 0) {
-      return new Date(guess + (p.second * 1000));
-    }
+    if (delta === 0) break;
     guess += delta;
   }
-  const p = zonedParts(new Date(guess), tz);
-  const ok = p.year === y && p.month === m && p.day === d && p.hour === h && p.minute === mi;
-  return ok ? new Date(guess) : null;
+  // При переходе на зимнее время настенное время существует дважды. Для
+  // «следующего запуска» берём ПЕРВОЕ (более раннее) вхождение, а не то, к
+  // которому сошлась итерация. Обычно совпадение одно, тогда результат тот же.
+  const probes = [0, -30, 30, -60, 60, -90, 90, -120, 120].map(
+    (minutes) => guess + minutes * 60_000
+  );
+  let best: number | null = null;
+  for (const ms of probes) {
+    if (!matches(ms)) continue;
+    if (best === null || ms < best) best = ms;
+  }
+  return best === null ? null : new Date(best);
 }
 
 function lastDayOfMonth(y: number, m: number): number {
@@ -318,7 +329,7 @@ function candidatesOnDay(
         if (hour < notBefore.hour || (hour === notBefore.hour && minute < notBefore.minute)) continue;
       }
       if (notAfter) {
-        if (hour > notAfter.hour || (hour === notAfter.hour && minute >= notAfter.minute)) continue;
+        if (hour > notAfter.hour || (hour === notAfter.hour && minute > notAfter.minute)) continue;
       }
       result.push({ hour, minute });
     }
@@ -364,7 +375,7 @@ export function prevRun(expr: string, from: Date, timeZone?: string): Date | nul
   for (let i = 0; i < MAX_SEARCH_DAYS; i += 1) {
     if (dayMatches(cursor.year, cursor.month, cursor.day, spec)) {
       const na = firstDay
-        ? { hour: origin.hour, minute: origin.minute - 1 } // строго раньше минуты from
+        ? { hour: origin.hour, minute: origin.minute } // включая текущую минуту
         : null;
       const candidates = candidatesOnDay(spec, cursor.year, cursor.month, cursor.day, null, na);
       for (let i2 = candidates.length - 1; i2 >= 0; i2 -= 1) {
@@ -482,7 +493,12 @@ export function convertForSchtasks(expr: string): CronConversion {
 
 /** Аргументы schedule-gate, которые запекаются во враппер (cron/tz/окно/пернос). */
 export interface ScheduleGateSpec {
-  cron: string;
+  /**
+   * Cron-выражение для повторной проверки внутри обёртки. Задаётся только в
+   * poll-режиме: при родном триггере ОС уже сработала точно по cron, и повторная
+   * проверка ломала бы ручной запуск и catch-up.
+   */
+  cron?: string;
   tz?: string;
   notBefore?: string;
   notAfter?: string;
@@ -510,6 +526,8 @@ export function buildScheduleGate(
   notAfter?: string
 ): ScheduleGateSpec | undefined {
   const tz = (timezone || "").trim() || undefined;
-  if (!needsPollMode(expr, tz) && !(notBefore && notAfter)) return undefined;
-  return { cron: expr, tz, notBefore, notAfter };
+  const poll = needsPollMode(expr, tz);
+  if (!poll && !(notBefore && notAfter)) return undefined;
+  // cron проверяем только в poll-режиме (см. комментарий у ScheduleGateSpec).
+  return { ...(poll ? { cron: expr } : {}), tz, notBefore, notAfter };
 }

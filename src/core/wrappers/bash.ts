@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { WRAPPER_DIR } from "../../types.js";
 import { shellQuote } from "../scheduler/posix.js";
+import type { ScheduleGateSpec } from "../schedule-v2.js";
 
 /** Параметры генерации bash-обёртки. */
 export interface BashWrapperOptions {
@@ -35,6 +36,11 @@ export interface BashWrapperOptions {
   beforeScript?: string;
   /** Post-flight команда: выполняется даже при ошибке основной задачи. */
   afterScript?: string;
+  /**
+   * Гейт расписания (спринт 19): проверка cron в таймзоне задачи и окна
+   * запуска выполняется до lock и запуска opencode.
+   */
+  scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string };
 }
 
 /**
@@ -69,6 +75,7 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     afterScript,
     allowedTools,
     deniedTools,
+    scheduleGate,
   } = options;
 
   const lines: string[] = [
@@ -91,6 +98,12 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     `AFTER_SCRIPT=${shellQuote(afterScript ?? "")}`,
     `ALLOWED_TOOLS=${shellQuote((allowedTools ?? []).join(","))}`,
     `DENIED_TOOLS=${shellQuote((deniedTools ?? []).join(","))}`,
+    `SCHEDULE_GATE_FILE=${shellQuote(scheduleGate?.gateFile ?? "")}`,
+    `SCHEDULE_CRON=${shellQuote(scheduleGate?.cron ?? "")}`,
+    `SCHEDULE_TZ=${shellQuote(scheduleGate?.tz ?? "")}`,
+    `SCHEDULE_NOT_BEFORE=${shellQuote(scheduleGate?.notBefore ?? "")}`,
+    `SCHEDULE_NOT_AFTER=${shellQuote(scheduleGate?.notAfter ?? "")}`,
+    `SCHEDULE_DEFER_FILE=${shellQuote(scheduleGate?.deferFile ?? "")}`,
     "",
     "# cron запускает задачи с минимальным PATH — добавляем типовые каталоги.",
     'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.bun/bin:$PATH"',
@@ -100,6 +113,26 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     "log() {",
     '  printf \'[%s] %s\\n\' "$(date \'+%Y-%m-%d %H:%M:%S\')" "$*" >> "$LOG_FILE" 2>/dev/null || true',
     "}",
+    "",
+    "# Спринт 19: гейт расписания — до lock, чтобы ожидание окна не держало блокировку.",
+    'if [ -n "$SCHEDULE_GATE_FILE" ]; then',
+    '  SCHED_GATE_ARGS=()',
+    '  [ -n "$SCHEDULE_CRON" ] && SCHED_GATE_ARGS+=(--cron "$SCHEDULE_CRON")',
+    '  [ -n "$SCHEDULE_TZ" ] && SCHED_GATE_ARGS+=(--tz "$SCHEDULE_TZ")',
+    '  [ -n "$SCHEDULE_NOT_BEFORE" ] && SCHED_GATE_ARGS+=(--not-before "$SCHEDULE_NOT_BEFORE")',
+    '  [ -n "$SCHEDULE_NOT_AFTER" ] && SCHED_GATE_ARGS+=(--not-after "$SCHEDULE_NOT_AFTER")',
+    '  [ -n "$SCHEDULE_DEFER_FILE" ] && SCHED_GATE_ARGS+=(--defer-file "$SCHEDULE_DEFER_FILE")',
+    '  if ! command -v node >/dev/null 2>&1; then',
+    '    log "[scheduler] Гейт расписания пропущен: node не найден в PATH."',
+    "  else",
+    '    node "$SCHEDULE_GATE_FILE" "${SCHED_GATE_ARGS[@]}" >> "$LOG_FILE" 2>&1',
+    "    SCHED_GATE_CODE=$?",
+    '    if [ "$SCHED_GATE_CODE" -eq 3 ]; then',
+    '      log "[scheduler] Гейт расписания: запуск не требуется (cron/окно). Перенос или пропуск тика."',
+    "      exit 0",
+    "    fi",
+    "  fi",
+    "fi",
     "",
     "# Атомарная блокировка: mkdir завершается ошибкой, если каталог уже есть.",
     'if ! mkdir "$LOCK_FILE.d" 2>/dev/null; then',

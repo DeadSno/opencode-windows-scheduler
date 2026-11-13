@@ -17,7 +17,10 @@ matter in practice.
 
 ### Cron schedules
 
-Five-field cron: `minute hour day-of-month month day-of-week`.
+Five-field cron: `minute hour day-of-month month day-of-week`. Supports lists,
+ranges and steps in every field (`0 8-10,18 * * 1-5/2`), month and weekday names
+(`0 9 * * MON-FRI`), `@every` sugar (`@every 15m`, `@every 2h`, `@every 1d`),
+`L` as the last day of the month and the `d#n` n-th weekday form (`0 9 * * FRI#3`).
 
 | Pattern | Example | Meaning |
 | --- | --- | --- |
@@ -25,10 +28,26 @@ Five-field cron: `minute hour day-of-month month day-of-week`.
 | Fixed time | `0 9 * * *` | Daily at 09:00 |
 | Weekdays | `30 8 * * 1-5` | 08:30 Monday to Friday |
 | Monthly | `0 3 1 * *` | 03:00 on the 1st |
+| Last day | `0 3 L * *` | 03:00 on the last day of the month |
+| N-th weekday | `0 9 * * FRI#3` | 09:00 on the third Friday |
+| Sugar | `@every 15m` | Every 15 minutes |
 
-The Windows backend translates cron to native Task Scheduler triggers. Expressions
-that `schtasks` cannot express are rejected at creation time with an explicit error
-instead of being silently approximated.
+The Windows backend translates simple cron expressions to native Task Scheduler
+triggers. Expressions `schtasks` cannot express (`L`, `#`, complex lists) or tasks
+with a timezone other than the system one are registered in poll mode: the OS task
+wakes the wrapper every minute and `schedule-gate` decides whether the agent runs.
+
+### Timezones and launch windows
+
+- `timezone` — IANA zone per task (e.g. `Europe/Moscow`). `nextRun`/`prevRun`,
+  dry-run next-run estimates and the gate evaluate cron in this zone; DST
+  transitions are handled (nonexistent spring-forward times are skipped).
+- `notBefore` / `notAfter` — daily launch window in `HH:MM` (may cross midnight,
+  e.g. `22:00`–`06:00`). A run that fires outside the window is **postponed**
+  until the window opens (once, via a defer-file), not skipped.
+- `pausedUntil` — pause a task until an ISO moment. `pause_task` accepts
+  `until`; the plugin re-enables the task automatically at startup and on a
+  5-minute timer, and `resume_task` resumes early.
 
 ### File triggers
 

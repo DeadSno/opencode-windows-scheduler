@@ -62,7 +62,7 @@
     "demo": "node scripts/demo-dashboard.mjs",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run build:gui",
-    "test": "node test-sqlite.mjs && node test-crash-recovery.mjs && node test-workspaces.mjs && node test-role-scoped.mjs && node test-dry-run.mjs && node test-matrix.mjs && node test-matrix-lifecycle.mjs && node test-matrix-sync.mjs && node test-retention.mjs && node test-metrics.mjs && node test-agent-tools.mjs && node test-skill.mjs && node test-docs.mjs",
+    "test": "node test-sqlite.mjs && node test-crash-recovery.mjs && node test-workspaces.mjs && node test-role-scoped.mjs && node test-dry-run.mjs && node test-matrix.mjs && node test-matrix-lifecycle.mjs && node test-matrix-sync.mjs && node test-retention.mjs && node test-metrics.mjs && node test-schedule-v2.mjs && node test-agent-tools.mjs && node test-skill.mjs && node test-docs.mjs",
     "test:sqlite": "node test-sqlite.mjs",
     "test:crash": "node test-crash-recovery.mjs",
     "test:workspaces": "node test-workspaces.mjs",
@@ -73,6 +73,7 @@
     "test:matrix-sync": "node test-matrix-sync.mjs",
     "test:retention": "node test-retention.mjs",
     "test:metrics": "node test-metrics.mjs",
+    "test:schedule-v2": "node test-schedule-v2.mjs",
     "test:agent": "node test-agent-tools.mjs",
     "test:skill": "node test-skill.mjs",
     "test:docs": "node test-docs.mjs"

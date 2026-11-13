@@ -10,6 +10,7 @@ import { loadTaskDefinitions } from "../task-transfer.js";
 import { getHistory } from "../db/history-repo.js";
 import { getWorkspace } from "../workspaces.js";
 import { expandMatrixTask } from "./matrix.js";
+import { nextRun } from "./schedule-v2.js";
 import type { TaskDefinition } from "../task-transfer.js";
 
 export interface DryRunRoleScoped {
@@ -33,6 +34,19 @@ export interface DryRunTaskItem {
   estimatedTokens?: number | null;
   /** Для клона матрицы — имя родителя-шаблона (Спринт 15). */
   matrixParent?: string;
+  /**
+   * Эффективное расписание cron-задачи (Спринт 19): пояс, окно запуска и
+   * ближайшие срабатывания с учётом часового пояса. Позволяет проверить
+   * пересчёт cron до регистрации в ОС.
+   */
+  scheduleDetails?: {
+    cron: string;
+    timezone: string | null;
+    notBefore: string | null;
+    notAfter: string | null;
+    pausedUntil: string | null;
+    nextRuns: string[];
+  };
 }
 
 export interface DryRunTotals {
@@ -253,6 +267,33 @@ export async function simulatePipeline(taskName: string): Promise<DryRunReport> 
           ? { allowed: undefined, denied: def.deniedTools }
           : null;
 
+    // Эффективное расписание cron-задачи (Спринт 19): ближайшие срабатывания
+    // считаем в часовом поясе задачи, чтобы dry-run показывал то же время, что
+    // увидит планировщик после регистрации.
+    let scheduleDetails: DryRunTaskItem["scheduleDetails"];
+    if ((def.triggerType ?? "cron") === "cron" && def.schedule) {
+      const runs: string[] = [];
+      try {
+        let cursor = new Date();
+        for (let i = 0; i < 3; i++) {
+          const next = nextRun(def.schedule, cursor, def.timezone);
+          if (!next) break;
+          runs.push(next.toISOString());
+          cursor = next;
+        }
+      } catch {
+        taskWarnings.push(`Не удалось разобрать cron "${def.schedule}" для расчёта ближайших запусков.`);
+      }
+      scheduleDetails = {
+        cron: def.schedule,
+        timezone: def.timezone ?? null,
+        notBefore: def.notBefore ?? null,
+        notAfter: def.notAfter ?? null,
+        pausedUntil: def.pausedUntil ?? null,
+        nextRuns: runs,
+      };
+    }
+
     tasks.push({
       name: def.name,
       order: index,
@@ -268,6 +309,7 @@ export async function simulatePipeline(taskName: string): Promise<DryRunReport> 
       estimatedCostUsd: estimatedCostUsd != null ? Math.round(estimatedCostUsd * 10000) / 10000 : null,
       estimatedTokens: estimatedTokens != null ? Math.round(estimatedTokens) : null,
       ...(matrixParent ? { matrixParent } : {}),
+      ...(scheduleDetails ? { scheduleDetails } : {}),
     });
 
     if (taskWarnings.length > 0) {

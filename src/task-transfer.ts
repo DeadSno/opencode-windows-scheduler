@@ -7,6 +7,7 @@ import {
   saveTask,
   deleteTask,
 } from "./db/tasks-repo.js";
+import { isValidIanaTimeZone, validateLaunchWindow } from "./core/schedule-v2.js";
 
 /** Триггер задачи по событию из MCP-шины. */
 export interface McpEventTrigger {
@@ -140,6 +141,19 @@ export interface TaskDefinition {
   matrixQueue?: string[];
   /** Для родителя матрицы — true (флаг для фильтров/DAG). */
   isMatrixParent?: boolean;
+  /**
+   * IANA-часовой пояс задачи (Спринт 19), например "Europe/Moscow".
+   * Не задан — системный пояс. Если отличается от системного, задача
+   * регистрируется в poll-режиме: ОС будит её каждую минуту, а cron
+   * проверяется в обёртке с учётом этого пояса.
+   */
+  timezone?: string;
+  /** Начало окна запуска "HH:MM" (Спринт 19); вне окна запуск переносится. */
+  notBefore?: string;
+  /** Конец окна запуска "HH:MM"; может быть меньше notBefore (через полночь). */
+  notAfter?: string;
+  /** Пауза до даты (ISO, Спринт 19): плагин включит задачу автоматически. */
+  pausedUntil?: string;
   /** Когда задача была создана — защита от ложного catch-up сразу после создания. */
   createdAt?: string;
 }
@@ -266,6 +280,10 @@ export async function buildExportJson(
         ? { triggerType: "mcp-event" as const }
         : {}),
       ...(definition?.watchPath ? { watchPath: definition.watchPath } : {}),
+      ...(definition?.timezone ? { timezone: definition.timezone } : {}),
+      ...(definition?.notBefore ? { notBefore: definition.notBefore } : {}),
+      ...(definition?.notAfter ? { notAfter: definition.notAfter } : {}),
+      ...(definition?.pausedUntil ? { pausedUntil: definition.pausedUntil } : {}),
       ...(Array.isArray(definition?.allowedTools) && definition.allowedTools.length > 0
         ? { allowedTools: definition.allowedTools }
         : {}),
@@ -441,6 +459,28 @@ export function parseImportJson(raw: string): ParsedImport {
     const model = readOptionalString(source.model);
     const priority = normalizePriority(source.priority);
     const workspaceId = readOptionalString(source.workspaceId);
+
+    // Планирование 2.0 (Спринт 19): IANA-зона, окно запуска, пауза до даты.
+    const timezone = readOptionalString(source.timezone);
+    if (timezone && !isValidIanaTimeZone(timezone)) {
+      errors.push(
+        `Запись ${position}${name ? ` (${name})` : ""}: неизвестный часовой пояс ` +
+          `«${timezone}» (нужна IANA-зона, например Europe/Moscow).`
+      );
+    }
+    const notBefore = readOptionalString(source.notBefore);
+    const notAfter = readOptionalString(source.notAfter);
+    const windowError = validateLaunchWindow(notBefore, notAfter);
+    if (windowError) {
+      errors.push(`Запись ${position}${name ? ` (${name})` : ""}: ${windowError}`);
+    }
+    const pausedUntil = readOptionalString(source.pausedUntil);
+    if (pausedUntil && Number.isNaN(Date.parse(pausedUntil))) {
+      errors.push(
+        `Запись ${position}${name ? ` (${name})` : ""}: pausedUntil должен быть ` +
+          `датой в формате ISO (например 2026-12-01T09:00:00Z).`
+      );
+    }
 
     // Ограничения инструментов (Спринт 14): массив непустых строк без дублей.
     // Пустой allowedTools отклоняется с явной ошибкой (избегаем «запрещено всё»).
@@ -636,6 +676,10 @@ export function parseImportJson(raw: string): ParsedImport {
       ...(dependsOn !== undefined ? { dependsOn } : {}),
       ...(triggerType === "cron" ? {} : { triggerType }),
       ...(watchPath ? { watchPath } : {}),
+      ...(timezone !== undefined ? { timezone } : {}),
+      ...(notBefore !== undefined ? { notBefore } : {}),
+      ...(notAfter !== undefined ? { notAfter } : {}),
+      ...(pausedUntil !== undefined ? { pausedUntil } : {}),
       ...(mcpEvent ? { mcpEvent } : {}),
       ...(allowedTools !== undefined ? { allowedTools } : {}),
       ...(deniedTools !== undefined ? { deniedTools } : {}),

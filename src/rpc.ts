@@ -87,6 +87,14 @@ const TaskItem = {
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */
     watchPath: { type: ["string", "null"] },
+    /** IANA-часовой пояс задачи (Спринт 19; null — системный). */
+    timezone: { type: ["string", "null"] },
+    /** Начало окна запуска "HH:MM" (null — без окна). */
+    notBefore: { type: ["string", "null"] },
+    /** Конец окна запуска "HH:MM" (null — без окна). */
+    notAfter: { type: ["string", "null"] },
+    /** Пауза до даты в ISO (null — автопродолжение не запланировано). */
+    pausedUntil: { type: ["string", "null"] },
     /** Рабочая директория задачи (null — папка проекта по умолчанию). */
     workingDirectory: { type: ["string", "null"] },
     /** Привязка к multi-repo workspace (null — без workspace). */
@@ -180,6 +188,12 @@ const CreateTaskInput = {
     deniedTools: { type: "array", items: { type: "string" } },
     /** Matrix (fan-out): раскладывает задачу-шаблон на клоны по workspace. */
     matrix: MatrixSchema,
+    /** IANA-часовой пояс задачи (например, Europe/Moscow). Пусто — системный. */
+    timezone: { type: "string" },
+    /** Начало окна запуска "HH:MM"; вне окна запуск переносится. */
+    notBefore: { type: "string" },
+    /** Конец окна запуска "HH:MM"; может быть меньше notBefore (через полночь). */
+    notAfter: { type: "string" },
   },
   required: ["name", "schedule", "prompt"],
 } as const;
@@ -602,7 +616,18 @@ const DeleteTemplateOutput = {
   required: ["success"],
 } as const;
 
-const PauseResumeInput = NameOnly;
+const PauseResumeInput = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+    /**
+     * Только для pause: пауза до указанного момента (ISO). Плагин включит
+     * задачу автоматически; пусто — бессрочная пауза.
+     */
+    until: { type: "string" },
+  },
+  required: ["name"],
+} as const;
 
 const UpdateTaskInput = {
   type: "object" as const,
@@ -641,6 +666,12 @@ const UpdateTaskInput = {
     deniedTools: { type: "array", items: { type: "string" } },
     /** Matrix (fan-out): раскладывает задачу-шаблон на клоны по workspace. */
     matrix: MatrixSchema,
+    /** IANA-часовой пояс задачи. Пустая строка — сбросить на системный. */
+    timezone: { type: "string" },
+    /** Начало окна запуска "HH:MM". Пустая строка — сбросить окно. */
+    notBefore: { type: "string" },
+    /** Конец окна запуска "HH:MM". Пустая строка — сбросить окно. */
+    notAfter: { type: "string" },
   },
   required: ["name"],
 } as const;

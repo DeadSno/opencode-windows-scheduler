@@ -93,14 +93,19 @@ is read from the database or from files under the plugin directory.
 **Run a task**
 
 1. The OS scheduler starts the wrapper.
-2. The wrapper acquires the lock (`locks/<task>.lock`), writes the log
+2. When the task carries a schedule gate (poll-mode cron, foreign timezone or a
+   launch window), the wrapper first runs `node dist/core/schedule-gate.js`: it
+   re-checks the extended cron in the task's zone, and if now is outside the
+   launch window it waits until the window opens (postpone, deduplicated by a
+   defer-file) or exits with code 3 so the wrapper skips silently.
+3. The wrapper acquires the lock (`locks/<task>.lock`), writes the log
    (`logs/<task>.log`), runs the pre-flight hook and starts `opencode run` with the
    prompt file. Output is streamed to the log.
-3. When the process ends, the wrapper enforces the timeout result, runs the Quality
+4. When the process ends, the wrapper enforces the timeout result, runs the Quality
    Gate and the post-flight hook.
-4. The wrapper calls `node dist/core/record-history.js --finish ...` with status,
+5. The wrapper calls `node dist/core/record-history.js --finish ...` with status,
    duration, tokens, cost, model and hook results.
-5. The recorder writes `history` and updates `metrics`, then evaluates retries, task
+6. The recorder writes `history` and updates `metrics`, then evaluates retries, task
    chains, DAG dependents and matrix continuation.
 
 **Read state**
@@ -136,6 +141,8 @@ from their clones instead of their own last run.
 | `src/core/lock.ts` | Single-instance lock manager |
 | `src/core/file-watcher.ts` | chokidar-based file triggers |
 | `src/core/cron-to-schtasks.ts` | Cron → Task Scheduler translation |
+| `src/core/schedule-v2.ts` | Extended cron parser/matcher, timezone math, launch windows, poll-mode decisions |
+| `src/core/schedule-gate.ts` | Wrapper-side gate: cron re-check (poll mode), window postpone, defer-file |
 | `src/db/` | SQLite access: schema, migrations, repositories, recovery |
 | `src/shared/jobs-view.ts` | Task view shared by the GUI and dashboard |
 

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- **Планирование 2.0:** `timezone` (IANA) на задачу — cron/DST считается в этом поясе, при зоне ≠ системной задача уходит в poll-режим (`MINUTE /mo 1` + `schedule-gate` в обёртке); следующие срабатывания считаются в dry-run.
+- Окна запуска `notBefore`/`notAfter` (HH:MM, можно через полночь) — запуск переносится на открытие окна, не пропускается (postpone с dedup через defer-файл).
+- Расширенный cron: `@every 15m|2h|1d`, `L` (последний день месяца), `d#n` (N-й день недели, напр. `FRI#3`), имена месяцев/дней, диапазоны и списки со шагами.
+- Пауза до даты `pausedUntil` — `pause_task(name, until?)` сохраняет ISO-момент; авто-возобновление при старте плагина и по таймеру каждые 5 мин, `resume_task` снимает паузу досрочно.
+- `test-schedule-v2.mjs` (50 проверок: парсер, nextRun/prevRun, DST, окна, CLI-шлюз) — добавлен в `npm test`.
+
 ### Planned
 
 - One-shot scheduling, session continuity, guards, worktree isolation, declarative job files.
