@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-13
+
 ### Added
 
 - **Планирование 2.0:** `timezone` (IANA) на задачу — cron/DST считается в этом поясе, при зоне ≠ системной задача уходит в poll-режим (`MINUTE /mo 1` + `schedule-gate` в обёртке); следующие срабатывания считаются в dry-run.
@@ -88,6 +90,7 @@ First public release.
 - Deleting a matrix parent deletes its family, but deleting a workspace does not touch existing matrix jobs.
 - Agent tools cover a subset of the RPC surface (see roadmap item 0.4).
 
-[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/DeadSno/opencode-windows-scheduler/releases/tag/v1.0.0
