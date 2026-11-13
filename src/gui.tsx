@@ -33,6 +33,14 @@ interface NotificationSettings {
   webhook?: { enabled: boolean; url: string }
 }
 
+/** Настройки ретеншна истории (Спринт 18). 0 — соответствующее ограничение выключено. */
+interface HistorySettings {
+  retentionDays: number
+  maxRecords: number
+  lastCleanupAt: string | null
+  lastCleanupDeleted: number
+}
+
 interface Job {
   name: string
   schedule: string
@@ -238,6 +246,14 @@ export default Plugin.define({
     const [notificationsCollapsed, setNotificationsCollapsed] = createSignal(true)
     const [testNotificationBusy, setTestNotificationBusy] = createSignal(false)
 
+    // Настройки ретеншна истории (Спринт 18): очистка старых записей.
+    const [historyRetentionDays, setHistoryRetentionDays] = createSignal(30)
+    const [historyMaxRecords, setHistoryMaxRecords] = createSignal(5000)
+    const [historyLastCleanupAt, setHistoryLastCleanupAt] = createSignal<string | null>(null)
+    const [historyLastCleanupDeleted, setHistoryLastCleanupDeleted] = createSignal(0)
+    const [historyCollapsed, setHistoryCollapsed] = createSignal(true)
+    const [historyCleanupBusy, setHistoryCleanupBusy] = createSignal(false)
+
     // Таймеры ожидания завершения ручных запусков (для тостов OpenCode).
     const pendingRunTimers = new Map<string, ReturnType<typeof setInterval>>()
     onCleanup(() => {
@@ -268,6 +284,11 @@ export default Plugin.define({
         setOnlyOnError(n?.onlyOnError !== false)
         setWebhookEnabled(Boolean(n?.webhook?.enabled))
         setWebhookUrl(n?.webhook?.url ?? "")
+        const h = s.history
+        setHistoryRetentionDays(Number(h?.retentionDays ?? 30))
+        setHistoryMaxRecords(Number(h?.maxRecords ?? 5000))
+        setHistoryLastCleanupAt(h?.lastCleanupAt ?? null)
+        setHistoryLastCleanupDeleted(Number(h?.lastCleanupDeleted ?? 0))
       } catch (err: any) {
         console.error("RPC Error (get_settings):", err)
       }
@@ -282,10 +303,21 @@ export default Plugin.define({
       }
     }
 
+    /** Текущие настройки ретеншна из сигналов формы. */
+    function currentHistorySettings(): HistorySettings {
+      return {
+        retentionDays: Math.max(0, Math.floor(Number(historyRetentionDays()) || 0)),
+        maxRecords: Math.max(0, Math.floor(Number(historyMaxRecords()) || 0)),
+        lastCleanupAt: historyLastCleanupAt(),
+        lastCleanupDeleted: Math.max(0, Math.floor(Number(historyLastCleanupDeleted()) || 0)),
+      }
+    }
+
     async function persistSettings(patch: {
       maxConcurrent?: number
       winterMode?: boolean
       notifications?: NotificationSettings
+      history?: HistorySettings
     }) {
       try {
         const s = await rpc.save_settings(patch)
@@ -298,6 +330,13 @@ export default Plugin.define({
           setWebhookEnabled(Boolean(n?.webhook?.enabled))
           setWebhookUrl(n?.webhook?.url ?? "")
         }
+        if (patch.history !== undefined) {
+          const h = s.history
+          setHistoryRetentionDays(Number(h?.retentionDays ?? 30))
+          setHistoryMaxRecords(Number(h?.maxRecords ?? 5000))
+          setHistoryLastCleanupAt(h?.lastCleanupAt ?? null)
+          setHistoryLastCleanupDeleted(Number(h?.lastCleanupDeleted ?? 0))
+        }
       } catch (err: any) {
         console.error("RPC Error (save_settings):", err)
         ctx.toast.show({ title: "Не удалось сохранить настройки", variant: "error", description: errorMessage(err) })
@@ -307,6 +346,42 @@ export default Plugin.define({
     /** Сохраняет настройки уведомлений (вызывается после изменения любого поля). */
     async function saveNotificationSettings() {
       await persistSettings({ notifications: currentNotificationSettings() })
+    }
+
+    /** Сохраняет настройки ретеншна (вызывается после изменения любого поля). */
+    async function saveHistorySettings() {
+      await persistSettings({ history: currentHistorySettings() })
+    }
+
+    /** Кнопка «🧹 Очистить сейчас»: фиксирует форму и запускает очистку. */
+    async function handleHistoryCleanup() {
+      setHistoryCleanupBusy(true)
+      try {
+        // Сначала фиксируем значения формы — очистка использует settings.json.
+        await persistSettings({ history: currentHistorySettings() })
+        const result = await rpc.cleanup_history({})
+        // cleanup_history обновляет lastCleanupAt/lastCleanupDeleted в settings.json.
+        const s = await rpc.get_settings({})
+        const h = s.history
+        setHistoryRetentionDays(Number(h?.retentionDays ?? 30))
+        setHistoryMaxRecords(Number(h?.maxRecords ?? 5000))
+        setHistoryLastCleanupAt(h?.lastCleanupAt ?? null)
+        setHistoryLastCleanupDeleted(Number(h?.lastCleanupDeleted ?? 0))
+        ctx.toast.show({
+          title: result.success ? "Очистка истории завершена" : "Очистка не удалась",
+          variant: result.success ? "success" : "error",
+          description: result.message,
+        })
+      } catch (err: any) {
+        console.error("RPC Error (cleanup_history):", err)
+        ctx.toast.show({
+          title: "Очистка не удалась",
+          variant: "error",
+          description: errorMessage(err),
+        })
+      } finally {
+        setHistoryCleanupBusy(false)
+      }
     }
 
     /** Кнопка «🧪 Тестовое уведомление». */
@@ -1841,6 +1916,74 @@ export default Plugin.define({
                     </button>
                     <span style="font-size:11px;color:#8e8e93">
                       ntfy.sh не используется — только webhook.
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 🧹 История и ретеншн (Спринт 18) */}
+            <div style="width:100%;max-width:700px;box-sizing:border-box;margin-top:8px;background:#1e1e1e;border:1px solid #333;border-radius:10px;overflow:hidden">
+              <button
+                onClick={() => setHistoryCollapsed(!historyCollapsed())}
+                style="display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;box-sizing:border-box;padding:10px 14px;background:transparent;border:none;color:#e0e0e0;font-size:12px;font-weight:600;cursor:pointer;text-align:left"
+              >
+                <span>🧹 История и ретеншн</span>
+                <span style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:400;color:#8e8e93">
+                  {historyRetentionDays() > 0 ? `старше ${historyRetentionDays()} дн.` : "без срока"} · {historyMaxRecords() > 0 ? `до ${historyMaxRecords()} записей` : "без лимита"}
+                  <span>{historyCollapsed() ? "▾" : "▴"}</span>
+                </span>
+              </button>
+
+              {!historyCollapsed() && (
+                <div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Удалять записи старше, дней</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={historyRetentionDays()}
+                      onChange={(e) => {
+                        setHistoryRetentionDays(Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)))
+                        void saveHistorySettings()
+                      }}
+                      style="width:70px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                    />
+                    <span style="font-size:11px;color:#8e8e93">0 = не удалять по возрасту</span>
+                  </div>
+
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Хранить не более записей</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={historyMaxRecords()}
+                      onChange={(e) => {
+                        setHistoryMaxRecords(Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)))
+                        void saveHistorySettings()
+                      }}
+                      style="width:80px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                    />
+                    <span style="font-size:11px;color:#8e8e93">0 = без ограничения</span>
+                  </div>
+
+                  <div style="font-size:11px;color:#8e8e93">
+                    Последняя очистка:{" "}
+                    {historyLastCleanupAt()
+                      ? `${new Date(historyLastCleanupAt()!).toLocaleString()} · удалено ${historyLastCleanupDeleted()}`
+                      : "ещё не выполнялась"}
+                  </div>
+
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <button
+                      onClick={() => void handleHistoryCleanup()}
+                      disabled={historyCleanupBusy()}
+                      style={`padding:6px 12px;background:#007acc;color:white;border:none;border-radius:6px;cursor:${historyCleanupBusy() ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${historyCleanupBusy() ? 0.6 : 1}`}
+                    >
+                      {historyCleanupBusy() ? "Очистка..." : "🧹 Очистить сейчас"}
+                    </button>
+                    <span style="font-size:11px;color:#8e8e93">
+                      Удаляются только завершённые записи; незавершённые запуски не трогаются.
                     </span>
                   </div>
                 </div>

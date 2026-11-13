@@ -121,9 +121,12 @@ from their clones instead of their own last run.
 | `src/task-transfer.ts` | Export/import, validation, `MatrixConfig` types |
 | `src/workspaces.ts` | Workspace registry and path validation |
 | `src/templates.ts` | Reusable task templates |
-| `src/settings.ts` | Plugin settings and notification config |
+| `src/settings.ts` | Plugin settings: notifications and history retention |
 | `src/notifications.ts` | Webhook notifications |
 | `src/history.ts` | History model and status types |
+| `src/version.ts` | Runtime plugin version (reads package.json) |
+| `src/core/retention.ts` | Daily history prune and incremental vacuum |
+| `src/core/analytics.ts` | Pure 14-day analytics and CSV export |
 | `src/core/scheduler/` | Platform backends, registry, logs |
 | `src/core/ps-wrapper.ts` | PowerShell wrapper template and `.cmd` generation |
 | `src/core/wrappers/bash.ts` | POSIX wrapper template |
@@ -183,6 +186,15 @@ pre/post-flight results, the chained next task, workspace and tool restrictions.
 If the host or the machine dies mid-run, the row stays in `running`. On the next
 plugin activation, `db/recovery.ts` marks stale `running` rows as `error`, so the UI
 never shows a permanently running task.
+
+History is bounded by retention: `settings.json` carries `history.retentionDays` and
+`history.maxRecords` (defaults 30 / 5000, `0` disables). Cleanup runs at most once a
+day on plugin start (`core/retention.ts`), prunes only finished rows via
+`pruneHistory` in `db/history-repo.ts`, then `PRAGMA incremental_vacuum` frees space.
+Aggregates in `metrics` are never pruned. Period analytics (per-day buckets, success
+rate, tokens, cost, matrix/model breakdowns) are computed by `core/analytics.ts` and
+exposed as `get_analytics` / `GET /api/analytics`; the dashboard renders a 14-day
+block and `GET /api/history/export` serves CSV/JSON.
 
 ## Chains, retries and DAG
 

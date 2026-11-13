@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loadHistory, loadMetrics } from "./history.js";
+import { getHistory, countRunningRecords } from "./db/history-repo.js";
+import { buildAnalytics, historyToCsv } from "./core/analytics.js";
 import { getSchedulerTitle } from "./core/scheduler/index.js";
+import { getPluginVersion } from "./version.js";
 import { checkpointDb, getDbFile, getDbStatus } from "./db/index.js";
 import { listWorkspaces } from "./workspaces.js";
 import { simulatePipeline } from "./core/dry-run.js";
@@ -491,6 +494,8 @@ async function handleRequest(
       pathname === "/api/history" ||
       pathname === "/api/metrics" ||
       pathname === "/api/models-analysis" ||
+      pathname === "/api/analytics" ||
+      pathname === "/api/history/export" ||
       pathname === "/api/export-db" ||
       pathname === "/api/workspaces" ||
       pathname === "/api/health" ||
@@ -518,6 +523,9 @@ async function handleRequest(
         ok: true,
         app: DASHBOARD_MARKER,
         port: getDashboardPort(),
+        version: getPluginVersion(),
+        scheduler: getSchedulerTitle(),
+        queueDepth: countRunningRecords(),
         db: getDbStatus(),
       });
       return;
@@ -615,6 +623,55 @@ async function handleRequest(
     if (req.method === "GET" && pathname === "/api/models-analysis") {
       const history = await loadHistory();
       sendJson(res, 200, aggregateModels(history));
+      return;
+    }
+
+    // Аналитика за период (Спринт 18): итоги, дневные бакеты, топ по стоимости.
+    if (req.method === "GET" && pathname === "/api/analytics") {
+      const days = Math.min(
+        365,
+        Math.max(1, Math.floor(Number(url.searchParams.get("days")) || 14))
+      );
+      const topLimit = Math.max(
+        1,
+        Math.floor(Number(url.searchParams.get("top")) || 10)
+      );
+      const records = getHistory(null, 20000);
+      const tasks = await deps.getTasks();
+      const report = buildAnalytics(records, {
+        days,
+        topLimit,
+        tasks: tasks.map((task) => ({
+          name: task.name,
+          matrixParentId: task.matrixParentId ?? null,
+        })),
+      });
+      sendJson(res, 200, report);
+      return;
+    }
+
+    // Экспорт истории: CSV (для Excel) или JSON (для скриптов).
+    if (req.method === "GET" && pathname === "/api/history/export") {
+      const format = (url.searchParams.get("format") || "csv").toLowerCase();
+      const records = getHistory(null, 100000);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      if (format === "json") {
+        sendAttachment(
+          res,
+          200,
+          "application/json; charset=utf-8",
+          JSON.stringify({ exportedAt: new Date().toISOString(), records }, null, 2),
+          `history-${stamp}.json`
+        );
+      } else {
+        sendAttachment(
+          res,
+          200,
+          "text/csv; charset=utf-8",
+          historyToCsv(records),
+          `history-${stamp}.csv`
+        );
+      }
       return;
     }
 
@@ -822,6 +879,29 @@ function sendBuffer(
   res.end(body);
 }
 
+/** Отправляет текстовый файл (CSV/JSON-экспорт истории). */
+function sendAttachment(
+  res: http.ServerResponse,
+  status: number,
+  contentType: string,
+  body: string,
+  filename: string
+): void {
+  if (res.headersSent) {
+    res.end();
+    return;
+  }
+  res.writeHead(status, {
+    "Content-Type": contentType,
+    "Content-Length": String(Buffer.byteLength(body, "utf8")),
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    [DASHBOARD_HEADER]: DASHBOARD_MARKER,
+  });
+  res.end(body);
+}
+
 /**
  * Список задач + метрики по каждой задаче, посчитанные из history.json
  * (колонка «Метрики» в таблице дашборда).
@@ -918,6 +998,24 @@ function renderPage(): string {
   .prio { font-size: 12px; color: #f5a623; white-space: nowrap; }
   .hist { margin-top: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; }
   .hist h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .an-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .an-actions { display: flex; gap: 6px; }
+  .an-actions .btn { padding: 3px 8px; font-size: 11px; }
+  .an-kpis { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+  .an-kpis b { color: var(--text); font-size: 14px; }
+  .an-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding: 6px 0 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .an-bar { flex: 1 1 0; min-width: 14px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; cursor: default; }
+  .an-bar-fill { width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: .85; }
+  .an-label { font-size: 9px; color: var(--muted); margin-top: 4px; white-space: nowrap; }
+  .an-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 14px; }
+  .an-grid h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .an-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .an-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+  .an-table td { padding: 3px 6px; border-bottom: 1px solid var(--border); color: var(--text); }
+  .an-table tr:last-child td { border-bottom: none; }
+  .an-rate.okr { color: var(--ok); }
+  .an-rate.midr { color: var(--run); }
+  .an-rate.errr { color: var(--err); }
   .hist-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
   .hist-row:last-child { border-bottom: none; }
   .hist-time { color: var(--muted); white-space: nowrap; }
@@ -926,8 +1024,7 @@ function renderPage(): string {
   .hist-hook { white-space: nowrap; }
   .hist-hook.okh { color: #34c759; }
   .hist-hook.errh { color: #ff3b30; }
-  .whatif-text { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
-  .whatif-text b { color: var(--text); }
+  .whatif-text { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }  .whatif-text b { color: var(--text); }
   .wi-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .wi-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--border); }
   .wi-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
@@ -1016,6 +1113,22 @@ function renderPage(): string {
     <div class="hist">
       <h2>📜 История выполнений</h2>
       <div id="history"><div class="empty">Загрузка…</div></div>
+    </div>
+
+    <div class="hist">
+      <div class="an-head">
+        <h2>📊 Аналитика за период</h2>
+        <div class="an-actions">
+          <a class="btn" href="/api/history/export?format=csv" download>⬇️ CSV</a>
+          <a class="btn" href="/api/history/export?format=json" download>⬇️ JSON</a>
+        </div>
+      </div>
+      <div class="an-kpis" id="an-kpis"><span>Загрузка…</span></div>
+      <div class="an-chart" id="an-chart"></div>
+      <div class="an-grid">
+        <div><h3>Топ задач по стоимости</h3><div id="an-top"></div></div>
+        <div><h3>Матрицы</h3><div id="an-matrices"></div></div>
+      </div>
     </div>
 
     <div class="hist">
@@ -1212,8 +1325,105 @@ function renderPage(): string {
     box.innerHTML = html;
   }
 
-  function renderModelsAnalysis(data) {
-    var box = document.getElementById('whatif-table');
+  function rateClass(rate) {
+    if (rate >= 90) return 'okr';
+    if (rate >= 60) return 'midr';
+    return 'errr';
+  }
+
+  function money(value) {
+    var n = Number(value) || 0;
+    return '$' + n.toFixed(n >= 1 ? 2 : 4);
+  }
+
+  function durationText(ms) {
+    var n = Number(ms) || 0;
+    if (n <= 0) return '—';
+    if (n < 1000) return n + ' мс';
+    if (n < 60000) return (n / 1000).toFixed(1) + ' с';
+    return Math.round(n / 60000) + ' мин';
+  }
+
+  function renderAnalytics(an) {
+    var kpis = document.getElementById('an-kpis');
+    var chart = document.getElementById('an-chart');
+    var top = document.getElementById('an-top');
+    var matrices = document.getElementById('an-matrices');
+    if (!kpis || !chart || !top || !matrices) return;
+
+    if (!an || !an.totals) {
+      kpis.innerHTML = '<span>Аналитика недоступна.</span>';
+      chart.innerHTML = '';
+      top.innerHTML = '<div class="empty" style="padding:10px">—</div>';
+      matrices.innerHTML = '<div class="empty" style="padding:10px">—</div>';
+      return;
+    }
+
+    var t = an.totals;
+    kpis.innerHTML =
+      '<span>Запусков: <b>' + t.total + '</b></span>' +
+      '<span>Успех: <b class="an-rate ' + rateClass(t.successRate) + '">' + t.successRate + '%</b></span>' +
+      '<span>Средняя длительность: <b>' + durationText(t.avgDurationMs) + '</b></span>' +
+      '<span>Токены: <b>' + Number(t.tokens || 0).toLocaleString('ru-RU') + '</b></span>' +
+      '<span>Стоимость: <b>' + money(t.costUsd) + '</b></span>' +
+      '<span>Окно: <b>' + an.windowDays + ' дн.</b></span>' +
+      (t.partial ? '<span>Частично: <b>' + t.partial + '</b></span>' : '');
+
+    var daily = an.daily || [];
+    var max = 1;
+    for (var i = 0; i < daily.length; i++) {
+      if (daily[i].total > max) max = daily[i].total;
+    }
+    var bars = '';
+    for (var j = 0; j < daily.length; j++) {
+      var d = daily[j];
+      var h = d.total > 0 ? Math.max(3, Math.round((d.total / max) * 92)) : 2;
+      var color = d.total === 0 ? 'var(--border)' : (d.error > 0 ? 'var(--err)' : 'var(--ok)');
+      var tip = d.date + ': всего ' + d.total + ', успех ' + d.success + ', ошибок ' + d.error + ', ' + money(d.costUsd);
+      bars += '<div class="an-bar" title="' + esc(tip) + '">' +
+        '<div class="an-bar-fill" style="height:' + h + '%' + ';background:' + esc(color) + '"></div>' +
+        '<div class="an-label">' + esc(String(d.date).slice(5)) + '</div>' +
+        '</div>';
+    }
+    chart.innerHTML = bars || '<div class="empty" style="padding:10px">Нет данных за период.</div>';
+
+    var topRows = an.topByCost || [];
+    if (topRows.length === 0) {
+      top.innerHTML = '<div class="empty" style="padding:10px">Нет запусков за период.</div>';
+    } else {
+      var html = '<table class="an-table"><thead><tr><th>Задача</th><th>Запусков</th><th>Успех</th><th>Стоимость</th></tr></thead><tbody>';
+      for (var k = 0; k < topRows.length; k++) {
+        var row = topRows[k];
+        html += '<tr>' +
+          '<td>' + (row.isMatrixClone ? '↳ ' : '') + esc(row.taskName) + '</td>' +
+          '<td>' + row.total + '</td>' +
+          '<td class="an-rate ' + rateClass(row.successRate) + '">' + row.successRate + '%</td>' +
+          '<td>' + money(row.costUsd) + '</td>' +
+          '</tr>';
+      }
+      top.innerHTML = html + '</tbody></table>';
+    }
+
+    var matrixRows = an.matrices || [];
+    if (matrixRows.length === 0) {
+      matrices.innerHTML = '<div class="empty" style="padding:10px">Матриц за период не запускалось.</div>';
+    } else {
+      var mhtml = '<table class="an-table"><thead><tr><th>Матрица</th><th>Клонов</th><th>Запусков</th><th>Успех</th><th>Стоимость</th></tr></thead><tbody>';
+      for (var q = 0; q < matrixRows.length; q++) {
+        var m = matrixRows[q];
+        mhtml += '<tr>' +
+          '<td>📦 ' + esc(m.parentId) + '</td>' +
+          '<td>' + m.clones + '</td>' +
+          '<td>' + m.total + '</td>' +
+          '<td class="an-rate ' + rateClass(m.successRate) + '">' + m.successRate + '%</td>' +
+          '<td>' + money(m.costUsd) + '</td>' +
+          '</tr>';
+      }
+      matrices.innerHTML = mhtml + '</tbody></table>';
+    }
+  }
+
+  function renderModelsAnalysis(data) {    var box = document.getElementById('whatif-table');
     var text = document.getElementById('whatif-text');
     if (!box || !text) return;
     var models = (data && data.models) || [];
@@ -1455,7 +1665,8 @@ function renderPage(): string {
         loadMetricsJson(),
         safeJson('/api/history', { records: [] }),
         safeJson('/api/models-analysis', { models: [], totals: {}, whatIf: [] }),
-        safeJson('/api/workspaces', { workspaces: [] })
+        safeJson('/api/workspaces', { workspaces: [] }),
+        safeJson('/api/analytics?days=14', null)
       ]);
       var tasks = (results[0] && results[0].tasks) || [];
       var m = results[1] || {};
@@ -1474,6 +1685,7 @@ function renderPage(): string {
       renderGraph(tasks);
       renderHistory(history);
       renderModelsAnalysis(modelsAnalysis);
+      renderAnalytics(results[5]);
       showServerWarn(results[0] ? null : 'Не удалось загрузить список задач — остальные блоки обновлены. Подробности в консоли (F12).');
       updated.textContent = 'Обновлено: ' + new Date().toLocaleTimeString();
     } catch (err) {

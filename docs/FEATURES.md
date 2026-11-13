@@ -204,7 +204,12 @@ pre/post-flight results, next chained task, workspace and tool restrictions. Sta
 ### Metrics
 
 Per-task counters and totals: runs, successes, errors, tokens, cost. Available through
-`get_history`, the RPC layer and the dashboard header.
+`get_history`, the RPC layer and the dashboard header. A 14-day analytics slice —
+per-day buckets (UTC), success rate, token-based cost estimate, top tasks by cost,
+matrix and model breakdowns — is available through `get_analytics` /
+`GET /api/analytics` and the dashboard's «📊 Аналитика за период» block. History is
+pruned automatically (age and size limits, see Settings) and can be exported as
+CSV/JSON (`GET /api/history/export`).
 
 ### Logs
 
@@ -219,8 +224,10 @@ fan-out and estimated time. Nothing is executed and nothing is created.
 ### Dashboard
 
 A local web dashboard shows tasks, matrix tabs, per-workspace summaries, DAG markers,
-metrics and recent runs. It binds to localhost and has no authentication — do not
-expose it.
+metrics, a 14-day analytics block (KPIs, daily bar chart, top tasks by cost, matrices),
+recent runs and CSV/JSON history export. It binds to localhost and has no authentication
+— do not expose it. `GET /api/health` reports plugin version, scheduler backend, queue
+depth and database status for external monitoring.
 
 ## Management
 
@@ -248,8 +255,13 @@ the timeline never lies. Orphaned matrix clones are cleaned up at startup as wel
 
 ### Settings
 
-Global defaults (timeout, concurrency, notifications) live in the `settings` table and
-are editable from the GUI/RPC layer.
+Global defaults (timeout, concurrency, notifications, history retention) live in
+`settings.json` and are editable from the GUI/RPC layer. History retention keeps the
+raw run log bounded: `history.retentionDays` (default 30) and `history.maxRecords`
+(default 5000); `0` disables the respective limit. Cleanup runs at most once a day on
+plugin start, records `lastCleanupAt` / `lastCleanupDeleted`, and is also available as
+the `cleanup_history` RPC and the GUI's «Очистить сейчас» button. Aggregates in
+`metrics.json` are not affected by retention.
 
 ## Agent interface
 

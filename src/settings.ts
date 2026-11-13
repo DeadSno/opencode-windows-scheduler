@@ -26,6 +26,24 @@ export interface NotificationSettings {
 }
 
 /**
+ * Ретеншн истории (Спринт 18).
+ *
+ * Дашборд и метрики живут на агрегатах, поэтому удаление старых записей
+ * не искажает «Всего запусков» и стоимость: чистится только сырая история.
+ * 0 — соответствующее ограничение выключено.
+ */
+export interface HistorySettings {
+  /** Удалять завершённые записи старше N дней (0 — не удалять по возрасту). */
+  retentionDays: number;
+  /** Хранить не более N последних записей (0 — без ограничения). */
+  maxRecords: number;
+  /** Когда последний раз запускалась автоочистка (ISO). */
+  lastCleanupAt: string | null;
+  /** Сколько записей удалила последняя очистка (для дашборда). */
+  lastCleanupDeleted: number;
+}
+
+/**
  * Глобальные настройки плагина, которые меняются из GUI.
  * Хранятся в settings.json рядом с tasks.json / history.json.
  */
@@ -36,11 +54,57 @@ export interface SchedulerSettings {
   winterMode: boolean;
   /** Уведомления о завершении задач. */
   notifications: NotificationSettings;
+  /** Ретеншн истории запусков. */
+  history: HistorySettings;
 }
 
 export const SETTINGS_FILE = path.join(PLUGIN_DIR, "settings.json");
 export const DEFAULT_MAX_CONCURRENT = 1;
 export const DEFAULT_WINTER_MODE = false;
+export const DEFAULT_RETENTION_DAYS = 30;
+export const DEFAULT_MAX_RECORDS = 5000;
+
+/** Ретеншн по умолчанию: 30 дней и не больше 5000 записей. */
+export function defaultHistorySettings(): HistorySettings {
+  return {
+    retentionDays: DEFAULT_RETENTION_DAYS,
+    maxRecords: DEFAULT_MAX_RECORDS,
+    lastCleanupAt: null,
+    lastCleanupDeleted: 0,
+  };
+}
+
+/** Приводит счётчик ретеншна к безопасному целому (>= 0). */
+function normalizeRetentionLimit(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const int = Math.floor(n);
+  return int >= 0 ? int : fallback;
+}
+
+/** Приводит настройки ретеншна к безопасному виду. */
+function normalizeHistorySettings(
+  value: unknown,
+  fallback: HistorySettings
+): HistorySettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ...fallback };
+  }
+  const raw = value as Partial<HistorySettings>;
+  const lastCleanupAt =
+    typeof raw.lastCleanupAt === "string" && raw.lastCleanupAt.trim()
+      ? raw.lastCleanupAt.trim()
+      : null;
+  return {
+    retentionDays: normalizeRetentionLimit(raw.retentionDays, fallback.retentionDays),
+    maxRecords: normalizeRetentionLimit(raw.maxRecords, fallback.maxRecords),
+    lastCleanupAt,
+    lastCleanupDeleted: normalizeRetentionLimit(
+      raw.lastCleanupDeleted,
+      fallback.lastCleanupDeleted
+    ),
+  };
+}
 
 /** Значения уведомлений по умолчанию: всё выключено, только ошибки. */
 export function defaultNotifications(): NotificationSettings {
@@ -106,6 +170,7 @@ function normalizeNotifications(
 /** Читает настройки. Битый/отсутствующий файл — значения по умолчанию. */
 export async function loadSettings(): Promise<SchedulerSettings> {
   const fallbackNotifications = defaultNotifications();
+  const fallbackHistory = defaultHistorySettings();
   try {
     const raw = await fs.readFile(SETTINGS_FILE, "utf8");
     const parsed = JSON.parse(raw) as Partial<SchedulerSettings> | null;
@@ -122,12 +187,14 @@ export async function loadSettings(): Promise<SchedulerSettings> {
         parsed?.notifications,
         fallbackNotifications
       ),
+      history: normalizeHistorySettings(parsed?.history, fallbackHistory),
     };
   } catch {
     return {
       maxConcurrent: DEFAULT_MAX_CONCURRENT,
       winterMode: DEFAULT_WINTER_MODE,
       notifications: fallbackNotifications,
+      history: fallbackHistory,
     };
   }
 }
@@ -150,6 +217,10 @@ export async function saveSettings(
       patch.notifications !== undefined
         ? normalizeNotifications(patch.notifications, current.notifications)
         : current.notifications,
+    history:
+      patch.history !== undefined
+        ? normalizeHistorySettings(patch.history, current.history)
+        : current.history,
   };
   await fs.mkdir(PLUGIN_DIR, { recursive: true });
   await fs.writeFile(SETTINGS_FILE, JSON.stringify(next, null, 2), "utf8");

@@ -18,8 +18,10 @@
 | 14 | Экспорт/импорт задач, шаблоны | `src/task-transfer.ts`, `src/templates.ts` |
 | 15 | Matrix Builds (fan-out): клоны по workspace, parallel/sequential, failureMode, агрегация, DAG | `src/core/matrix.ts`, `SPRINT15` в истории |
 | 16 | Lifecycle матриц: каскадное удаление, отмена, чистка сирот, guard на удаление клона | `src/core/matrix.ts`, `test-matrix-lifecycle.mjs` |
+| 17 | Синхронизация матриц (`syncMatrixFamily`) + per-workspace overrides + concurrency | `src/core/matrix.ts`, `SPRINT17` (отчёт не писался) |
+| 18 | Ретеншн истории (30 дней / 5000 записей), аналитика за 14 дней, CSV/JSON-экспорт, `/api/health` | `SPRINT18.md` |
 
-## Спринт 17 — Синхронизация матриц + per-workspace настройки ⬅️ СЛЕДУЮЩИЙ
+## Спринт 17 — Синхронизация матриц + per-workspace настройки ✅ Готово
 
 **Проблема:** после создания матрицы изменение `matrix.workspaceIds` (или промпта/хуков) в `update_task`/GUI не пересоздаёт клонов — семья рассинхронизируется, появляются устаревшие клоны. Плюс нельзя задать клону отличия от родителя (свой промпт, модель, QG).
 
@@ -42,15 +44,16 @@
 
 **Ограничения на потом:** история удалённых при синхронизации клонов остаётся (чистится ретеншном — Спринт 18).
 
-## Спринт 18 — Ретеншн истории и аналитика
+## Спринт 18 — Ретеншн истории и аналитика ✅ Готово
 
-1. Настройки ретеншна: `history.retentionDays`, `history.maxRecords`, ежедневная автоочистка + `PRAGMA incremental_vacuum`.
-2. RPC/CLI: `cleanup_history`, `get_metrics` (агрегаты по задачам/матрицам: запуски, success rate, средняя длительность, токены, стоимость).
-3. Дашборд: вкладка «📊 Аналитика» (топ задач по стоимости, success rate, график по дням), экспорт истории в CSV/JSON.
-4. `/api/health` для внешнего мониторинга (БД, планировщик, осиротевшие задачи).
-5. Тесты: `test-retention.mjs`, `test-metrics.mjs`.
+Отчёт: `SPRINT18.md`. По факту:
+1. Настройки `history.retentionDays` / `history.maxRecords` в settings.json (дефолт 30 дней / 5000 записей, 0 — выкл.), автоочистка раз в сутки при старте плагина + `PRAGMA incremental_vacuum`; ручная кнопка «🧹 Очистить сейчас» и RPC `cleanup_history`. GUI: сворачиваемая секция «🧹 История и ретеншн».
+2. RPC: `cleanup_history` + отдельный `get_analytics` (`days` 1..365, `topLimit >= 1`): агрегаты по дням/задачам/моделям/матрицам, success rate, токены, стоимость. All-time RPC `get_metrics` оставлен как был — отдельное имя, см. SPRINT18.md (расхождение с этим пунктом).
+3. Дашборд: блок «📊 Аналитика за период» (KPI, график по дням, топ задач по стоимости, матрицы), экспорт истории в CSV/JSON (`/api/history/export?format=csv|json`).
+4. `/api/health`: `version` (из package.json), `scheduler`, `queueDepth` (незавершённые запуски), `db` (`getDbStatus()`). Статистику осиротевших задач health не отдаёт — сироты остаются в матричных инструментах (`matrix_control`).
+5. Тесты: `test-retention.mjs` (19 проверок) + `test-metrics.mjs` (25 проверок), оба в цепочке `npm test`.
 
-## Спринт 19 — Планирование 2.0
+## Спринт 19 — Планирование 2.0 ⬅️ СЛЕДУЮЩИЙ
 
 1. `timezone` на задачу (IANA), корректный пересчёт cron → schtasks и в dry-run.
 2. Окна запуска: `notBefore` / `notAfter` (например, деплой только 22:00–06:00) — перенос запуска, а не пропуск.

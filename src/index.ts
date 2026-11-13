@@ -29,7 +29,10 @@ import {
 import { SchedulerRpc } from "./rpc.js";
 import { loadHistory, loadMetrics } from "./history.js";
 import { loadSettings, saveSettings } from "./settings.js";
-import type { NotificationSettings } from "./settings.js";
+import type { HistorySettings, NotificationSettings } from "./settings.js";
+import { runHistoryRetention, maybeRunHistoryRetention } from "./core/retention.js";
+import { buildAnalytics } from "./core/analytics.js";
+import { getHistory } from "./db/history-repo.js";
 import { sendTestNotification } from "./notifications.js";
 import {
   loadTaskDefinitions,
@@ -1247,6 +1250,26 @@ export default Plugin.define({
     }
     checkJsonBackups();
 
+    // Спринт 18: ежедневная очистка истории. Ошибка ретеншна не должна мешать
+    // плагину стартовать — пишем в лог и продолжаем.
+    void maybeRunHistoryRetention()
+      .then((report) => {
+        if (report && report.deleted > 0) {
+          console.log(
+            `[retention] Удалено ${report.deleted} записей истории ` +
+              `(по возрасту: ${report.deletedByAge}, по лимиту: ${report.deletedByCount}); ` +
+              `осталось ${report.kept}.`
+          );
+        }
+      })
+      .catch((err: any) => {
+        console.error(
+          `[retention] Не удалось очистить историю: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
+
     // Инициализация блокировок: создаём директорию и очищаем зависшие lock-файлы (>24 ч).
     const lockManager = new LockManager(LOCK_DIR);
     await lockManager.initialize();
@@ -1725,6 +1748,70 @@ export default Plugin.define({
       get_metrics: async () => {
         return await loadMetrics();
       },
+      cleanup_history: async (input: unknown) => {
+        const { retentionDays, maxRecords } = input as {
+          retentionDays?: number;
+          maxRecords?: number;
+        };
+        try {
+          const report = await runHistoryRetention({ retentionDays, maxRecords });
+          const message = report.skipped
+            ? report.skipped
+            : `Удалено ${report.deleted} записей (по возрасту: ${report.deletedByAge}, по лимиту: ` +
+              `${report.deletedByCount}), осталось ${report.kept}.`;
+          return {
+            success: true,
+            message,
+            deleted: report.deleted,
+            deletedByAge: report.deletedByAge,
+            deletedByCount: report.deletedByCount,
+            kept: report.kept,
+            retentionDays: report.retentionDays,
+            maxRecords: report.maxRecords,
+            vacuumed: report.vacuumed,
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            message: `Не удалось очистить историю: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            deleted: 0,
+            deletedByAge: 0,
+            deletedByCount: 0,
+            kept: 0,
+            retentionDays: 0,
+            maxRecords: 0,
+            vacuumed: false,
+          };
+        }
+      },
+      get_analytics: async (input: unknown) => {
+        const { days, topLimit } = input as { days?: number; topLimit?: number };
+        try {
+          const windowDays = Math.min(
+            365,
+            Math.max(1, Math.floor(Number(days) || 14))
+          );
+          const records = getHistory(null, 20000);
+          const definitions = await loadTaskDefinitions();
+          const report = buildAnalytics(records, {
+            days: windowDays,
+            topLimit: Math.max(1, Math.floor(Number(topLimit) || 10)),
+            tasks: definitions.map((definition) => ({
+              name: definition.name,
+              matrixParentId: definition.matrixParentId,
+            })),
+          });
+          return { success: true, report };
+        } catch (err: any) {
+          return {
+            success: false,
+            report: null,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
       get_dashboard_port: async () => {
         return { port: getDashboardPort() };
       },
@@ -1878,30 +1965,39 @@ export default Plugin.define({
         return await loadSettings();
       },
       save_settings: async (input: unknown) => {
-        const { maxConcurrent, winterMode, notifications } = input as {
+        const { maxConcurrent, winterMode, notifications, history } = input as {
           maxConcurrent?: number;
           winterMode?: boolean;
           notifications?: NotificationSettings;
+          history?: HistorySettings;
         };
         const current = await loadSettings();
         if (
           maxConcurrent === undefined &&
           winterMode === undefined &&
-          notifications === undefined
+          notifications === undefined &&
+          history === undefined
         ) {
           return {
             success: false,
             maxConcurrent: current.maxConcurrent,
             winterMode: current.winterMode,
             notifications: current.notifications,
+            history: current.history,
           };
         }
-        const settings = await saveSettings({ maxConcurrent, winterMode, notifications });
+        const settings = await saveSettings({
+          maxConcurrent,
+          winterMode,
+          notifications,
+          history,
+        });
         return {
           success: true,
           maxConcurrent: settings.maxConcurrent,
           winterMode: settings.winterMode,
           notifications: settings.notifications,
+          history: settings.history,
         };
       },
       test_notification: async () => {

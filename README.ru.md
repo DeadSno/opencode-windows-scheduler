@@ -28,7 +28,7 @@ English version: [README.md](README.md).
 | Оркестрация | DAG `dependsOn`, цепочки success/error, матрицы (parallel/sequential, continue/stop, concurrency, overrides, агрегатор) |
 | Триггеры | cron, изменение файла (chokidar), MCP-события |
 | Мультирепо | workspaces с валидацией путей, запуск по workspace, матрица поверх родительской задачи |
-| Наблюдаемость | история SQLite (success / error / timeout / partial / running), метрики, логи, веб-дашборд |
+| Наблюдаемость | история SQLite (success / error / timeout / partial / running), метрики (длительность, токены, стоимость), логи, веб-дашборд: аналитика за 14 дней, ретеншн истории (лимиты по возрасту и размеру), экспорт CSV/JSON |
 | Эксплуатация | dry-run, экспорт/импорт JSON, шаблоны, webhook-уведомления, настройки |
 | Интерфейсы | панель OpenCode GUI, веб-дашборд, 12 инструментов для агента, встроенный скилл |
 

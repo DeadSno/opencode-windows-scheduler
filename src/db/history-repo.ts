@@ -301,3 +301,96 @@ export function countHistory(): number {
   const row = getDb().prepare("SELECT COUNT(*) AS count FROM history").get() as any;
   return Number(row?.count) || 0;
 }
+
+/** Число активных (незавершённых) запусков: глубина очереди для /api/health. */
+export function countRunningRecords(): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS count FROM history WHERE finished_at IS NULL")
+    .get() as any;
+  return Number(row?.count) || 0;
+}
+
+/** Параметры очистки истории (Спринт 18). 0 — ограничение выключено. */
+export interface PruneHistoryOptions {
+  /** Удалять завершённые записи старше N дней. */
+  retentionDays?: number;
+  /** Оставить не более N последних записей. */
+  maxRecords?: number;
+  /** Опорный момент времени (для тестов). */
+  now?: Date;
+}
+
+export interface PruneHistoryResult {
+  deletedByAge: number;
+  deletedByCount: number;
+  deleted: number;
+  kept: number;
+  /** Граница по возрасту (ISO) или null, если возраст не ограничивали. */
+  cutoff: string | null;
+}
+
+/**
+ * Чистит сырую историю: по возрасту и/или по количеству записей.
+ *
+ * Незавершённые запуски (`finished_at IS NULL`) не удаляются никогда — их
+ * обрабатывает crash recovery. Агрегаты в таблице metrics не трогаются:
+ * ретеншн чистит детали, а не статистику.
+ */
+export function pruneHistory(options: PruneHistoryOptions = {}): PruneHistoryResult {
+  const instance = getDb();
+  const now = options.now ?? new Date();
+  let deletedByAge = 0;
+  let deletedByCount = 0;
+  let cutoff: string | null = null;
+
+  const days = Number(options.retentionDays ?? 0);
+  if (Number.isFinite(days) && days > 0) {
+    cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+    const result = instance
+      .prepare(
+        `DELETE FROM history
+         WHERE finished_at IS NOT NULL AND finished_at < ?`
+      )
+      .run(cutoff);
+    deletedByAge = Number(result.changes) || 0;
+  }
+
+  const maxRecords = Number(options.maxRecords ?? 0);
+  if (Number.isFinite(maxRecords) && maxRecords > 0) {
+    const result = instance
+      .prepare(
+        `DELETE FROM history
+         WHERE finished_at IS NOT NULL
+           AND id NOT IN (
+             SELECT id FROM history
+             WHERE finished_at IS NOT NULL
+             ORDER BY started_at DESC, id DESC
+             LIMIT ?
+           )`
+      )
+      .run(Math.max(0, Math.floor(maxRecords)));
+    deletedByCount = Number(result.changes) || 0;
+  }
+
+  return {
+    deletedByAge,
+    deletedByCount,
+    deleted: deletedByAge + deletedByCount,
+    kept: countHistory(),
+    cutoff,
+  };
+}
+
+/**
+ * Освобождает место после массового удаления. `PRAGMA incremental_vacuum`
+ * работает только при auto_vacuum = INCREMENTAL; иначе это no-op, поэтому
+ * вызов безопасен и не требует проверки режима.
+ */
+export function vacuumHistory(): boolean {
+  try {
+    getDb().exec("PRAGMA incremental_vacuum");
+    return true;
+  } catch {
+    return false;
+  }
+}

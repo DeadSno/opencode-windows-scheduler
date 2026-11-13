@@ -13,7 +13,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `update_task` keeps every field that is not passed, so the agent can change one setting without resending the whole task.
 - **Built-in agent skill** `scheduled-job-best-practices`, registered by the plugin itself: guidance on schedule design, prompt structure, safety defaults, matrix concurrency, DAG rules and failure diagnosis, plus `references/recipes.md` with seven complete examples. No manual `.opencode/skills` setup.
 - **Documentation:** `docs/ARCHITECTURE.md` (process model, modules, backends, data model, security model), `docs/FEATURES.md` (full feature catalog with examples and limits) and `docs/MIGRATION.md` (from cron, systemd timers, launchd and Windows Task Scheduler), linked from both READMEs.
-- `test-docs.mjs` — 30 checks that the guides exist, stay complete and ship in the npm package.
+- `test-docs.mjs` - 30 checks that the guides exist, stay complete and ship in the npm package.
+- **History retention:** `history.retentionDays` (default 30) and `history.maxRecords` (default 5000) in settings (`0` disables either limit); daily auto-cleanup on plugin start plus `PRAGMA incremental_vacuum`; `cleanup_history` RPC and a «🧹 История и ретеншн» panel in the GUI with last-cleanup stats and an «Очистить сейчас» button.
+- **14-day analytics:** `get_analytics` RPC and `GET /api/analytics` (runs, success rate, tokens, cost per day/task/model/matrix); dashboard «📊 Аналитика за период» block (KPIs, daily bar chart, top tasks by cost, matrices); history export to CSV/JSON (`GET /api/history/export?format=csv|json`) — `recordCost` falls back to a token-based estimate when `costUsd` is missing.
+- **`/api/health`** now reports `version` (from package.json), `scheduler` (backend title), `queueDepth` (unfinished runs) and `db` status.
+- `test-retention.mjs` - 19 checks; `test-metrics.mjs` - 25 checks; both wired into `npm test`.
 
 ### Planned
 

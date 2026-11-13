@@ -379,12 +379,25 @@ const NotificationSettingsSchema = {
   required: ["enabled", "onlyOnError"],
 } as const;
 
+/** Ретеншн истории (Спринт 18). */
+const HistorySettingsSchema = {
+  type: "object" as const,
+  properties: {
+    retentionDays: { type: "number" },
+    maxRecords: { type: "number" },
+    lastCleanupAt: { type: ["string", "null"] },
+    lastCleanupDeleted: { type: "number" },
+  },
+  required: ["retentionDays", "maxRecords"],
+} as const;
+
 const GetSettingsOutput = {
   type: "object" as const,
   properties: {
     maxConcurrent: { type: "number" },
     winterMode: { type: "boolean" },
     notifications: NotificationSettingsSchema,
+    history: HistorySettingsSchema,
   },
   required: ["maxConcurrent", "winterMode", "notifications"],
 } as const;
@@ -395,6 +408,7 @@ const SaveSettingsInput = {
     maxConcurrent: { type: "number" },
     winterMode: { type: "boolean" },
     notifications: NotificationSettingsSchema,
+    history: HistorySettingsSchema,
   },
   additionalProperties: false,
 } as const;
@@ -406,8 +420,58 @@ const SaveSettingsOutput = {
     maxConcurrent: { type: "number" },
     winterMode: { type: "boolean" },
     notifications: NotificationSettingsSchema,
+    history: HistorySettingsSchema,
   },
   required: ["success", "maxConcurrent", "winterMode", "notifications"],
+} as const;
+
+const CleanupHistoryInput = {
+  type: "object" as const,
+  properties: {
+    /** Удалять записи старше N дней (0 — выключить ограничение по возрасту). */
+    retentionDays: { type: "number" },
+    /** Хранить не более N записей (0 — без ограничения). */
+    maxRecords: { type: "number" },
+  },
+  additionalProperties: false,
+} as const;
+
+const CleanupHistoryOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+    deleted: { type: "number" },
+    deletedByAge: { type: "number" },
+    deletedByCount: { type: "number" },
+    kept: { type: "number" },
+    retentionDays: { type: "number" },
+    maxRecords: { type: "number" },
+    vacuumed: { type: "boolean" },
+  },
+  required: ["success", "message", "deleted", "kept"],
+} as const;
+
+const GetAnalyticsInput = {
+  type: "object" as const,
+  properties: {
+    /** Окно анализа в днях (по умолчанию 14, максимум 365). */
+    days: { type: "number" },
+    /** Сколько строк в топах (по умолчанию 10). */
+    topLimit: { type: "number" },
+  },
+  additionalProperties: false,
+} as const;
+
+const GetAnalyticsOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    // null при ошибке: report формируется только при success=true.
+    report: { type: ["object", "null"] as const },
+    error: { type: "string" },
+  },
+  required: ["success", "report"],
 } as const;
 
 const TestNotificationInput = {
@@ -906,6 +970,8 @@ export const SchedulerRpc = Rpc.define({
       input: GetTasksInput,
       output: CleanupMatrixOrphansOutput,
     },
+    cleanup_history: { input: CleanupHistoryInput, output: CleanupHistoryOutput },
+    get_analytics: { input: GetAnalyticsInput, output: GetAnalyticsOutput },
     expand_matrix_preview: {
       input: ExpandMatrixPreviewInput,
       output: ExpandMatrixPreviewOutput,
