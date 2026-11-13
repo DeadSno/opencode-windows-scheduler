@@ -39,8 +39,13 @@ const FALLBACK_PORT = 4782;
 /** Дополнительный порт, если и 3782, и 4782 заняты чужими процессами. */
 const EXTRA_PORTS = [5782];
 
-/** Имена процессов, которые считаем «зомби» от прошлых запусков плагина. */
-const ZOMBIE_IMAGE_NAMES = new Set(["node.exe", "bun.exe"]);
+const IS_WINDOWS = process.platform === "win32";
+
+/**
+ * Имена процессов, которые считаем «зомби» от прошлых запусков плагина.
+ * На Windows процессы называются node.exe / bun.exe, на POSIX — node / bun.
+ */
+const ZOMBIE_IMAGE_NAMES = new Set(["node", "node.exe", "bun", "bun.exe"]);
 
 /** Маркер-заголовок: по нему узнаём «свой» дашборд, уже слушающий порт. */
 const DASHBOARD_HEADER = "x-plugin-dashboard";
@@ -370,7 +375,11 @@ async function tryFreeZombiePort(port: number): Promise<boolean> {
     }
 
     try {
-      await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+      if (IS_WINDOWS) {
+        await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+      } else {
+        process.kill(pid, "SIGKILL");
+      }
       console.log(
         `[windows-scheduler] Снят зомби-процесс ${info.name} (PID ${pid}), державший порт ${port}.`
       );
@@ -387,8 +396,14 @@ async function tryFreeZombiePort(port: number): Promise<boolean> {
   return killed;
 }
 
-/** Возвращает PID'ы процессов, слушающих указанный TCP-порт (netstat). */
+/** Возвращает PID'ы процессов, слушающих указанный TCP-порт. */
 async function findListeningPids(port: number): Promise<number[]> {
+  if (IS_WINDOWS) return findListeningPidsWindows(port);
+  return findListeningPidsPosix(port);
+}
+
+/** Windows: netstat -ano, состояния LISTENING. */
+async function findListeningPidsWindows(port: number): Promise<number[]> {
   try {
     const { stdout } = await execFileAsync("netstat", ["-ano", "-p", "TCP"], {
       windowsHide: true,
@@ -410,8 +425,55 @@ async function findListeningPids(port: number): Promise<number[]> {
   }
 }
 
-/** Имя процесса и командная строка через CIM (Windows PowerShell). */
+/**
+ * macOS/Linux: lsof (есть в macOS и на большинстве Linux-образов),
+ * на Linux — запасной вариант через ss из iproute2.
+ */
+async function findListeningPidsPosix(port: number): Promise<number[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "lsof",
+      ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
+      { windowsHide: true }
+    );
+    const pids = stdout
+      .split(/\s+/)
+      .map(Number)
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+    if (pids.length > 0) return Array.from(new Set(pids));
+  } catch {
+    // lsof может отсутствовать или не быть в PATH — пробуем ss.
+  }
+
+  if (process.platform === "linux") {
+    try {
+      const { stdout } = await execFileAsync("ss", ["-ltnp", `sport = :${port}`], {
+        windowsHide: true,
+      });
+      const pids = new Set<number>();
+      for (const match of stdout.matchAll(/pid=(\d+)/g)) {
+        const pid = Number(match[1]);
+        if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+      }
+      return Array.from(pids);
+    } catch {
+      // ss тоже недоступен — считаем, что владельца порта не знаем.
+    }
+  }
+
+  return [];
+}
+
+/** Имя процесса и командная строка. */
 async function getProcessInfo(pid: number): Promise<{ name: string; commandLine: string } | null> {
+  if (IS_WINDOWS) return getProcessInfoWindows(pid);
+  return getProcessInfoPosix(pid);
+}
+
+/** Имя процесса и командная строка через CIM (Windows PowerShell). */
+async function getProcessInfoWindows(
+  pid: number
+): Promise<{ name: string; commandLine: string } | null> {
   try {
     const script =
       '$p = Get-CimInstance Win32_Process -Filter "ProcessId=' +
@@ -427,6 +489,25 @@ async function getProcessInfo(pid: number): Promise<{ name: string; commandLine:
     const idx = line.indexOf("|");
     if (idx < 0) return { name: line, commandLine: "" };
     return { name: line.slice(0, idx), commandLine: line.slice(idx + 1) };
+  } catch {
+    return null;
+  }
+}
+
+/** Имя процесса и командная строка через ps (macOS/Linux). */
+async function getProcessInfoPosix(
+  pid: number
+): Promise<{ name: string; commandLine: string } | null> {
+  try {
+    const [{ stdout: commOut }, { stdout: argsOut }] = await Promise.all([
+      execFileAsync("ps", ["-p", String(pid), "-o", "comm="], { windowsHide: true }),
+      execFileAsync("ps", ["-p", String(pid), "-o", "args="], { windowsHide: true }),
+    ]);
+    const comm = commOut.trim();
+    if (!comm) return null;
+    // comm — путь к бинарнику; для сопоставления с ZOMBIE_IMAGE_NAMES нужно имя.
+    const name = comm.split(/[\\/]/).pop() || comm;
+    return { name, commandLine: argsOut.trim() };
   } catch {
     return null;
   }
