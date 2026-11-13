@@ -88,7 +88,7 @@ try {
   const page = await (await fetch(base + "/")).text();
   ok("HTML: карточка «Всего токенов»", () => assert.ok(page.includes("Всего токенов")));
   ok("HTML: карточка «Примерная стоимость»", () => assert.ok(page.includes("Примерная стоимость")));
-  ok("HTML: колонка «Зависимости»", () => assert.ok(page.includes("<th>Зависимости</th>")));
+  ok("HTML: колонка «Зависимости»", () => assert.ok(page.includes('<th scope="col">Зависимости</th>')));
   ok("HTML: есть отрисовка графа DAG", () => assert.ok(page.includes("function renderGraph")));
 
   const tasks = await (await fetch(base + "/api/tasks")).json();

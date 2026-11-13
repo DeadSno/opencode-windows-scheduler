@@ -20,6 +20,35 @@ const {
   getDashboardPort,
   isDashboardRunning,
 } = await import("./dist/server.js");
+const { insertHistory } = await import("./dist/db/history-repo.js");
+
+// Сид истории для проверки фильтров /api/history. Записи идут от старых к
+// новым, сервер сортирует их сам по started_at DESC.
+const historySeed = [
+  ["alpha", "success"],
+  ["alpha", "success"],
+  ["alpha", "success"],
+  ["alpha", "success"],
+  ["alpha", "error"],
+  ["alpha", "error"],
+  ["beta", "partial"],
+  ["beta", "partial"],
+  ["beta", "partial"],
+  ["beta", "success"],
+  ["beta", "success"],
+  ["beta", "success"],
+];
+const seedStart = Date.now() - historySeed.length * 60_000;
+historySeed.forEach(([taskName, status], index) => {
+  const startedAt = new Date(seedStart + index * 60_000).toISOString();
+  insertHistory({
+    taskName,
+    status,
+    startedAt,
+    finishedAt: startedAt,
+    durationMs: 1000 + index,
+  });
+});
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -111,6 +140,25 @@ assert(tasksApi.contentType.includes("application/json"), "GET /api/tasks Conten
 
 const metricsApi = await readJsonResponse(await fetch(base + "/api/metrics"));
 assert(metricsApi.body.tokens === 0 && metricsApi.body.costUsd === 0, "метрики из пустой истории -> tokens/costUsd = 0");
+
+// Фильтры истории: имя задачи, статус и limit.
+const historyAll = await readJsonResponse(await fetch(base + "/api/history?limit=500"));
+assert(historyAll.status === 200 && Array.isArray(historyAll.body.records), "GET /api/history -> JSON с records");
+assert(historyAll.body.total === 12 && historyAll.body.records.length === 12, "история без фильтров отдаёт все 12 записей");
+
+const historyErrors = await readJsonResponse(await fetch(base + "/api/history?status=error"));
+assert(historyErrors.body.total === 2 && historyErrors.body.records.length === 2, "?status=error отдаёт только 2 ошибки");
+assert(historyErrors.body.records.every((r) => r.status === "error"), "?status=error не пропускает другие статусы");
+
+const historyAlpha = await readJsonResponse(await fetch(base + "/api/history?taskName=ALPHA&limit=2"));
+assert(historyAlpha.body.total === 6 && historyAlpha.body.records.length === 2, "?taskName=alpha&limit=2 -> total 6, returned 2");
+assert(historyAlpha.body.limit === 2 && historyAlpha.body.records.every((r) => r.taskName === "alpha"), "фильтр по имени не зависит от регистра");
+
+const historyPartial = await readJsonResponse(await fetch(base + "/api/history?taskName=beta&status=partial"));
+assert(historyPartial.body.total === 3 && historyPartial.body.records.every((r) => r.status === "partial"), "комбинация taskName + status фильтрует partial");
+
+const historyPage = await readJsonResponse(await fetch(base + "/api/history?limit=5"));
+assert(historyPage.body.total === 12 && historyPage.body.records.length === 5, "limit=5 режет выдачу, но total остаётся полным");
 
 const nfApi = await readJsonResponse(await fetch(base + "/api/unknown"));
 assert(nfApi.status === 404 && nfApi.contentType.includes("application/json"), "неизвестный /api/* -> 404 JSON");

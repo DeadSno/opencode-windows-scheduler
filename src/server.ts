@@ -1306,7 +1306,7 @@ function renderPage(): string {
     <table aria-label="Задачи планировщика">
       <thead>
         <tr>
-          <th>Имя</th><th>Статус</th><th>Cron</th><th>📦 Workspace</th><th>Модель</th><th>Приоритет</th><th>Зависимости</th><th>Метрики</th><th>Действия</th>
+          <th scope="col">Имя</th><th scope="col">Статус</th><th scope="col">Cron</th><th scope="col">📦 Workspace</th><th scope="col">Модель</th><th scope="col">Приоритет</th><th scope="col">Зависимости</th><th scope="col">Метрики</th><th scope="col">Действия</th>
         </tr>
       </thead>
       <tbody id="rows"><tr><td colspan="9" class="empty">Загрузка…</td></tr></tbody>
@@ -1621,7 +1621,7 @@ function renderPage(): string {
     if (topRows.length === 0) {
       top.innerHTML = '<div class="empty" style="padding:10px">Нет запусков за период.</div>';
     } else {
-      var html = '<table class="an-table"><thead><tr><th>Задача</th><th>Запусков</th><th>Успех</th><th>Стоимость</th></tr></thead><tbody>';
+      var html = '<table class="an-table"><thead><tr><th scope="col">Задача</th><th scope="col">Запусков</th><th scope="col">Успех</th><th scope="col">Стоимость</th></tr></thead><tbody>';
       for (var k = 0; k < topRows.length; k++) {
         var row = topRows[k];
         html += '<tr>' +
@@ -1638,7 +1638,7 @@ function renderPage(): string {
     if (matrixRows.length === 0) {
       matrices.innerHTML = '<div class="empty" style="padding:10px">Матриц за период не запускалось.</div>';
     } else {
-      var mhtml = '<table class="an-table"><thead><tr><th>Матрица</th><th>Клонов</th><th>Запусков</th><th>Успех</th><th>Стоимость</th></tr></thead><tbody>';
+      var mhtml = '<table class="an-table"><thead><tr><th scope="col">Матрица</th><th scope="col">Клонов</th><th scope="col">Запусков</th><th scope="col">Успех</th><th scope="col">Стоимость</th></tr></thead><tbody>';
       for (var q = 0; q < matrixRows.length; q++) {
         var m = matrixRows[q];
         mhtml += '<tr>' +
@@ -1667,7 +1667,7 @@ function renderPage(): string {
     }
 
     var html = '<table class="wi-table"><thead><tr>' +
-      '<th>Модель</th><th>Запусков</th><th>Токенов</th><th>Стоимость</th><th>Средняя длительность</th><th>Успешных</th>' +
+      '<th scope="col">Модель</th><th scope="col">Запусков</th><th scope="col">Токенов</th><th scope="col">Стоимость</th><th scope="col">Средняя длительность</th><th scope="col">Успешных</th>' +
       '</tr></thead><tbody>';
     for (var i = 0; i < models.length; i++) {
       var m = models[i];
@@ -1754,14 +1754,14 @@ function renderPage(): string {
         (matrixCount ? ' · 📦 матриц: ' + matrixCount : '');
     }
     if (!box) return;
-    var html = '<button class="ws-tab' + (activeWorkspace === 'all' ? ' active' : '') + '" data-ws="all">Все</button>';
+    var html = '<button class="ws-tab' + (activeWorkspace === 'all' ? ' active' : '') + '" data-ws="all" aria-pressed="' + (activeWorkspace === 'all') + '">Все</button>';
     for (var i = 0; i < workspaces.length; i++) {
       var w = workspaces[i];
       var color = w.color || '#8b949e';
-      html += '<button class="ws-tab' + (activeWorkspace === w.id ? ' active' : '') + '" data-ws="' + esc(w.id) + '" style="color:' + esc(color) + '">📦 ' + esc(w.name) + '</button>';
+      html += '<button class="ws-tab' + (activeWorkspace === w.id ? ' active' : '') + '" data-ws="' + esc(w.id) + '" aria-pressed="' + (activeWorkspace === w.id) + '" style="color:' + esc(color) + '">📦 ' + esc(w.name) + '</button>';
     }
-    html += '<button class="ws-tab' + (activeWorkspace === 'matrix' ? ' active' : '') + '" data-ws="matrix" title="Только родители матриц и их клоны">📦 Матрицы</button>';
-    html += '<button class="ws-tab' + (activeWorkspace === 'none' ? ' active' : '') + '" data-ws="none">Без workspace</button>';
+    html += '<button class="ws-tab' + (activeWorkspace === 'matrix' ? ' active' : '') + '" data-ws="matrix" aria-pressed="' + (activeWorkspace === 'matrix') + '" title="Только родители матриц и их клоны">📦 Матрицы</button>';
+    html += '<button class="ws-tab' + (activeWorkspace === 'none' ? ' active' : '') + '" data-ws="none" aria-pressed="' + (activeWorkspace === 'none') + '">Без workspace</button>';
     box.innerHTML = html;
   }
 
@@ -1857,7 +1857,7 @@ function renderPage(): string {
     if (isClone) {
       nameHtml = '<span class="clone-badge">↳ matrix ' + esc(t.matrixParentId || '') + '</span><br>' + esc(t.name);
     } else if (cloneCount > 0) {
-      nameHtml = '<button class="matrix-toggle" data-matrix="' + esc(t.name) + '" title="Показать/скрыть клоны">' +
+      nameHtml = '<button class="matrix-toggle" data-matrix="' + esc(t.name) + '" title="Показать/скрыть клоны" aria-label="Показать/скрыть клоны матрицы ' + esc(t.name) + '" aria-expanded="' + (!!expanded) + '">' +
         (expanded ? '▾' : '▸') + '</button> ' + esc(t.name) +
         '<div class="matrix-badge" title="' + esc(matrixTitle) + '">📦 Matrix (' + cloneCount + ')' + matrixLimit + '</div>';
     }
@@ -2063,7 +2063,7 @@ function renderPage(): string {
       if (report.warnings && report.warnings.length) {
         html += '<div class="warn" style="margin-bottom:8px">⚠ Предупреждения:<br>' + report.warnings.map(function (w) { return '· ' + esc(w); }).join('<br>') + '</div>';
       }
-      html += '<table class="wi-table"><thead><tr><th>#</th><th>Задача</th><th>Триггер</th><th>Workspace</th><th>cwd</th><th>Команда</th><th>Оценка</th></tr></thead><tbody>';
+      html += '<table class="wi-table"><thead><tr><th scope="col">#</th><th scope="col">Задача</th><th scope="col">Триггер</th><th scope="col">Workspace</th><th scope="col">cwd</th><th scope="col">Команда</th><th scope="col">Оценка</th></tr></thead><tbody>';
       for (var i = 0; i < report.tasks.length; i++) {
         var t = report.tasks[i];
         var est = '—';

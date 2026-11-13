@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+
+- TUI-панель теперь обновляется каждые 5 секунд через reactive store контекста и показывает паузу, а не статический снимок первого рендера.
+- Дашборд: история не обрезается молча, фильтры `/api/history` (`taskName`, `status`, `limit`) работают и покрыты тестом; статусы `partial`/`running`/`idle`/`paused`/`orphaned` отображаются корректно.
+- Добавлены `scope="col"`, `aria-pressed`, `aria-expanded` и подписи для иконочных кнопок дашборда.
+- Удалены устаревшие ad-hoc скрипты `test-create.cjs`/`test-run.cjs` и логи сборки из корня репозитория.
+
 ## [1.2.0] - 2026-11-13
 
 ### Added
