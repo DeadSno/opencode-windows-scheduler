@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+gui-experimental.cjs
+
+# Logs
+*.log
+logs/
+
+# Local configuration and secrets
+.env
+.env.*
+*.local.json
+
+# Test and coverage artifacts
+coverage/
+.nyc_output/
+ws-scheduler-*/
+mx-dbg*/
+
+# Local runtime state
+scheduler.db
+scheduler.db-shm
+scheduler.db-wal
+prompts/
+wrappers/
+locks/
+*.tgz
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

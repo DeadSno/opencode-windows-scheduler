@@ -1,0 +1,94 @@
+{
+  "name": "opencode-windows-scheduler",
+  "version": "1.0.0",
+  "description": "Local-first scheduling and orchestration for OpenCode v2 agent jobs: cron, DAG pipelines, matrix fan-out, quality gates and observability. Free and open source (MIT).",
+  "license": "MIT",
+  "author": "opencode-windows-scheduler contributors",
+  "homepage": "https://github.com/DeadSno/opencode-windows-scheduler#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DeadSno/opencode-windows-scheduler.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DeadSno/opencode-windows-scheduler/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "scheduler",
+    "cron",
+    "task-scheduler",
+    "windows-scheduler",
+    "launchd",
+    "systemd",
+    "ai-agents",
+    "automation",
+    "matrix-builds",
+    "dag"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx",
+    "./gui-experimental": "./gui-experimental.cjs"
+  },
+  "files": [
+    "dist",
+    "src",
+    "index.js",
+    "gui-experimental.cjs",
+    "skills",
+    "scripts",
+    "docs",
+    "README.md",
+    "README.ru.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CROSS_PLATFORM.md",
+    "ROADMAP.md",
+    "ROADMAP-STRATEGY.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:gui": "vite build",
+    "demo": "node scripts/demo-dashboard.mjs",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build && npm run build:gui",
+    "test": "node test-sqlite.mjs && node test-crash-recovery.mjs && node test-workspaces.mjs && node test-role-scoped.mjs && node test-dry-run.mjs && node test-matrix.mjs && node test-matrix-lifecycle.mjs && node test-matrix-sync.mjs && node test-agent-tools.mjs && node test-skill.mjs && node test-docs.mjs",
+    "test:sqlite": "node test-sqlite.mjs",
+    "test:crash": "node test-crash-recovery.mjs",
+    "test:workspaces": "node test-workspaces.mjs",
+    "test:role": "node test-role-scoped.mjs",
+    "test:dry-run": "node test-dry-run.mjs",
+    "test:matrix": "node test-matrix.mjs",
+    "test:matrix-lifecycle": "node test-matrix-lifecycle.mjs",
+    "test:matrix-sync": "node test-matrix-sync.mjs",
+    "test:agent": "node test-agent-tools.mjs",
+    "test:skill": "node test-skill.mjs",
+    "test:docs": "node test-docs.mjs"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.2.7",
+    "@opencode/schema": "^2.2.7",
+    "chokidar": "^6.0.0",
+    "iconv-lite": "^0.7.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@opentui/core": ">=0.8.1",
+    "@opentui/solid": ">=0.8.1",
+    "@types/node": "^20.19.43",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}
