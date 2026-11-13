@@ -167,6 +167,25 @@ assert(totals.success === 3 && totals.error === 3, "хвост metrics.json до
 assert(totals.tokens === 1200, "токены: 1000 legacy + 200");
 assert(Math.abs(totals.costUsd - 0.52) < 1e-9, "стоимость: 0.5 legacy + 0.02");
 
+// Частичный запуск учитывается отдельно и не попадает в error.
+historyRepo.recordRun(
+  "Partial Task",
+  "partial",
+  "2026-03-02T09:00:00.000Z",
+  500,
+  null
+);
+const partialMetrics = metricsRepo.getMetrics("Partial Task");
+assert(
+  partialMetrics.total === 1 && partialMetrics.partial === 1 && partialMetrics.error === 0,
+  "метрики: partial хранится отдельно от error"
+);
+const totalsWithPartial = metricsRepo.getTotals();
+assert(
+  totalsWithPartial.total === 7 && totalsWithPartial.partial === 1 && totalsWithPartial.error === 3,
+  "общие метрики: partial увеличивает total, но не error"
+);
+
 // --- 4. Crash recovery --------------------------------------------------
 const unfinishedId = historyRepo.startRun("Nightly Build", new Date(Date.now() - 5000).toISOString());
 assert(
