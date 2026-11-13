@@ -260,7 +260,9 @@ wrappers/         generated .cmd / .sh wrappers
 prompts/          prompt files
 ```
 
-Override the database location with `OPENCODE_SCHEDULER_DB` (used by tests).
+Override the database location with `OPENCODE_SCHEDULER_DB` (used by tests). Override
+the whole plugin directory (database, logs, locks, wrappers, prompts) with
+`OPENCODE_SCHEDULER_HOME` on any platform.
 
 Schema evolution is additive: `applySchema` runs `CREATE TABLE IF NOT EXISTS` on every
 connection and adds missing columns after `PRAGMA table_info`, so upgrading the plugin

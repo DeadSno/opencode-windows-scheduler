@@ -46,7 +46,7 @@ npm test
 
 Individual suites: `npm run test:sqlite`, `test:crash`, `test:workspaces`, `test:role`, `test:dry-run`, `test:matrix`, `test:matrix-lifecycle`, `test:matrix-sync`, `test:agent`, `test:skill`, `test:docs`.
 
-Tests run against `dist/`, so build first. They create a temporary `APPDATA`/config directory and never touch your real jobs.
+Tests run against `dist/`, so build first. They point `OPENCODE_SCHEDULER_HOME` (and legacy `APPDATA`) at a temporary directory, so they never touch your real jobs on any platform.
 
 New behavior needs a test. Matrix sync and DAG logic are the most sensitive areas — cover both the happy path and the "running clone must not be touched" path.
 
