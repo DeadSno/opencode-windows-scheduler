@@ -1414,9 +1414,10 @@ function renderPage(): string {
   /** История: последний загруженный список и режим «показать все». */
   var lastHistory = [];
   var historyExpanded = false;
-  // true — /api/metrics уже был заблокирован (например, антивирусом),
-  // поэтому дальше сразу используем /api/summary и не шумим в консоли.
-  var preferSummaryMetrics = false;
+  // /api/metrics и /api/summary отдают один и тот же обработчик. По умолчанию
+  // используем summary: некоторые антивирусы блокируют именно /api/metrics
+  // (HTTP 499), и тогда в консоли появляется ошибка при каждой загрузке.
+  var preferSummaryMetrics = true;
   var metricsFallbackLogged = false;
 
   function esc(s) {
@@ -2077,19 +2078,18 @@ function renderPage(): string {
   // обработчик на случай, если блокировка привязана к имени URL.
   function loadMetricsJson() {
     var primary = preferSummaryMetrics ? '/api/summary' : '/api/metrics';
+    var fallback = preferSummaryMetrics ? '/api/metrics' : '/api/summary';
     return fetch(primary, { cache: 'no-store' })
       .then(readJson)
       .catch(function () {
-        if (!preferSummaryMetrics) {
-          // Антивирус может блокировать именно /api/metrics. Переключаемся
-          // на тот же обработчик под другим URL один раз и навсегда для страницы.
-          preferSummaryMetrics = true;
-          if (!metricsFallbackLogged) {
-            metricsFallbackLogged = true;
-            console.info('Дашборд: /api/metrics недоступен, использую /api/summary');
-          }
+        // Переключаемся на второй URL того же обработчика и запоминаем выбор,
+        // чтобы следующие обновления не повторяли заблокированный запрос.
+        preferSummaryMetrics = !preferSummaryMetrics;
+        if (!metricsFallbackLogged) {
+          metricsFallbackLogged = true;
+          console.info('Дашборд: ' + primary + ' недоступен, использую ' + fallback);
         }
-        return fetch('/api/summary', { cache: 'no-store' })
+        return fetch(fallback, { cache: 'no-store' })
           .then(readJson)
           .catch(function (err) {
             // Логируем только первый сбой, чтобы не засорять консоль каждые 5 секунд.
