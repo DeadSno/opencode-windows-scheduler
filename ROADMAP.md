@@ -94,6 +94,17 @@
 
 Тесты: `test-integrations.mjs` (116 проверок) — в цепочке `npm test`.
 
+## Спринт 23 — One-shot расписание ✅ Готово
+
+**По факту:** разовые задачи реализованы (отчёт: `SPRINT23.md`).
+
+1. `triggerType: "once"`: `runAt` (ISO-8601, локальная дата допускается) либо `delaySeconds`; `schedule` не нужен. Задаётся через `schedule_task`, `update_task`, RPC `create_task` / `update_task`, импорт задач и GUI/дашборд.
+2. Нативная регистрация: Windows `/sc ONCE` с датой и временем, Linux `at -t`, macOS `StartCalendarInterval` + cleanup wrapper после запуска. Повторный запуск после рестарта плагина не создаётся.
+3. Export/import: `runAt` сохраняется в JSON, старые пакеты без него импортируются как раньше; матрица с one-shot отклоняется.
+4. Dry-run: для once `trigger: "once"`, `scheduleDetails.nextRuns = [runAt]`; GUI/дашборд показывают «Разово» и запланированное время.
+
+Тесты: `test-one-shot.mjs` (41 проверка) — в цепочке `npm test`.
+
 ## Правила спринта (не меняются)
 
 - Без новых зависимостей, Node 24, `npm run build` + `npm run build:gui` обязательны.

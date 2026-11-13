@@ -39,6 +39,30 @@ triggers. Expressions `schtasks` cannot express (`L`, `#`, complex lists) or tas
 with a timezone other than the system one are registered in poll mode: the OS task
 wakes the wrapper every minute and `schedule-gate` decides whether the agent runs.
 
+### One-shot runs
+
+`triggerType: "once"` runs a task exactly once at a specific moment. Use either
+`runAt` (ISO-8601, or a local date string such as `2026-11-13 22:40`) or
+`delaySeconds` (delay from now):
+
+```json
+{
+  "name": "deploy-once",
+  "triggerType": "once",
+  "runAt": "2026-11-13T22:40:00+03:00",
+  "prompt": "Deploy the current main branch."
+}
+```
+
+```json
+{ "name": "remind-later", "triggerType": "once", "delaySeconds": 3600, "prompt": "..." }
+```
+
+`runAt` wins when both are present. `schedule` is ignored. One-shot tasks are
+registered natively (`schtasks /sc ONCE`, Linux `at`, macOS launchd cleanup
+agent), are not repeated after a plugin restart, and cannot be combined with a
+matrix.
+
 ### Timezones and launch windows
 
 - `timezone` — IANA zone per task (e.g. `Europe/Moscow`). `nextRun`/`prevRun`,

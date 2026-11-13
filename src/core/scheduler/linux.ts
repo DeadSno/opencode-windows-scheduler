@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { buildAtTimestamp } from "../one-shot.js";
 import { PosixSchedulerBase, shellQuote } from "./posix.js";
 import type { RegistryEntry } from "./registry.js";
 
@@ -111,15 +112,101 @@ export class LinuxScheduler extends PosixSchedulerBase {
     await this.writeCrontab(next);
   }
 
-  protected async installEntry(_entry: RegistryEntry): Promise<void> {
+  /** Строка команды one-shot для stdin `at`. */
+  private atCommand(entry: RegistryEntry): string {
+    const log = entry.logFile ? ` >> ${shellQuote(entry.logFile)} 2>&1` : "";
+    return `/bin/bash ${shellQuote(entry.command)}${log}`;
+  }
+
+  /**
+   * Ставит one-shot в `at` и возвращает id задания.
+   * `at -t` принимает локальное время системы в формате YYYYMMDDHHMM.
+   */
+  private async scheduleAt(entry: RegistryEntry): Promise<string> {
+    if (!entry.runAt) {
+      throw new Error(`Задача "${entry.name}": не задано runAt для one-shot.`);
+    }
+    const timestamp = buildAtTimestamp(entry.runAt);
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn("at", ["-t", timestamp], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on("error", (err) => {
+        reject(
+          new Error(
+            `Не удалось вызвать at (установите пакет at): ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          )
+        );
+      });
+      child.on("close", (code) => {
+        if (code !== 0) {
+          reject(
+            new Error(
+              `at завершился с кодом ${code}: ${stderr.trim() || stdout.trim()}`
+            )
+          );
+          return;
+        }
+        const match = /job\s+(\d+)/i.exec(stdout);
+        if (!match) {
+          reject(new Error(`at не вернул id задания: ${stdout.trim()}`));
+          return;
+        }
+        resolve(match[1]);
+      });
+      child.stdin.end(`${this.atCommand(entry)}\n`);
+    });
+  }
+
+  /** Отменяет задание at, если оно ещё существует. */
+  private async cancelAt(entry: RegistryEntry): Promise<void> {
+    if (!entry.atJobId) return;
+    try {
+      await execFileAsync("atrm", [entry.atJobId]);
+    } catch {
+      // Задание уже выполнилось или было удалено — это не ошибка.
+    }
+    delete entry.atJobId;
+  }
+
+  protected async installEntry(entry: RegistryEntry): Promise<void> {
+    if (entry.triggerType === "once") {
+      if (!entry.paused) {
+        entry.atJobId = await this.scheduleAt(entry);
+      }
+      return;
+    }
     await this.rebuildCrontab();
   }
 
-  protected async uninstallEntry(_entry: RegistryEntry): Promise<void> {
+  protected async uninstallEntry(entry: RegistryEntry): Promise<void> {
+    if (entry.triggerType === "once") {
+      await this.cancelAt(entry);
+      return;
+    }
     await this.rebuildCrontab();
   }
 
-  protected async applyPause(_entry: RegistryEntry, _paused: boolean): Promise<void> {
+  protected async applyPause(entry: RegistryEntry, paused: boolean): Promise<void> {
+    if (entry.triggerType === "once") {
+      if (paused) {
+        await this.cancelAt(entry);
+      } else if (entry.runAt && Date.parse(entry.runAt) > Date.now()) {
+        entry.atJobId = await this.scheduleAt(entry);
+      }
+      await this.registry.upsert(entry);
+      return;
+    }
     await this.rebuildCrontab();
   }
 }

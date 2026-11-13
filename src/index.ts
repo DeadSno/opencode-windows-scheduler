@@ -8,6 +8,10 @@ import path from "node:path";
 import { LockManager } from "./core/lock.js";
 import { LOCK_DIR, LOG_DIR, PLUGIN_DIR, sanitizeName } from "./types.js";
 import { parseCron, buildScheduleGate, isValidIanaTimeZone, validateLaunchWindow, prevRun } from "./core/schedule-v2.js";
+import {
+  buildLaunchdOneShotCleanup,
+  normalizeOneShotRunAt,
+} from "./core/one-shot.js";
 import { ensureWrapper, writePromptFile, writeWrapperCmd, lockFilePath, requestImmediateRun } from "./core/ps-wrapper.js";
 import { getSchedulerBackend } from "./core/scheduler/index.js";
 import { SCHEDULER_SKILL_ID, loadSchedulerSkill } from "./skill.js";
@@ -190,8 +194,23 @@ export const scheduleTaskSchema = z.object({
   name: z.string().describe("Unique task name (the plugin prefix is applied automatically)."),
   schedule: z
     .string()
+    .optional()
     .describe(
-      "Cron expression (5 fields: minute hour day-of-month month day-of-week). Supports ranges, lists, */N steps, month/weekday names, @every 15m|2h|1d, L (last day of month) and FRI#3 (third Friday). Expressions schtasks cannot express are checked every minute inside the wrapper."
+      "Cron expression (5 fields: minute hour day-of-month month day-of-week). Required for triggerType=cron; ignored for file/mcp-event. Supports ranges, lists, */N steps, month/weekday names, @every 15m|2h|1d, L (last day of month) and FRI#3 (third Friday). Expressions schtasks cannot express are checked every minute inside the wrapper."
+    ),
+  runAt: z
+    .string()
+    .optional()
+    .describe(
+      "Absolute one-shot start time in ISO-8601 (e.g. 2026-12-01T09:00:00Z). Requires triggerType=once; mutually exclusive with delaySeconds (runAt wins)."
+    ),
+  delaySeconds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "One-shot delay in seconds from now. Requires triggerType=once. Convenient alternative to runAt."
     ),
   timezone: z
     .string()
@@ -267,9 +286,11 @@ export const scheduleTaskSchema = z.object({
     .optional()
     .describe("Compensation/rollback task started after a failed run."),
   triggerType: z
-    .enum(["cron", "file", "mcp-event"])
+    .enum(["cron", "file", "mcp-event", "once"])
     .optional()
-    .describe("Trigger type: cron (default), file or mcp-event."),
+    .describe(
+      "Trigger type: cron (default), file, mcp-event or once (single run at runAt/delaySeconds)."
+    ),
   mcpEvent: z
     .object({
       server: z.string(),
@@ -315,6 +336,40 @@ export const scheduleTaskSchema = z.object({
     .describe(
       "Matrix fan-out: the task becomes a template that is expanded into clones, one per workspace. The parent never runs itself. Cannot be combined with workspaceId."
     ),
+}).superRefine((value, ctx) => {
+  const trigger = value.triggerType ?? "cron";
+  if (trigger === "cron" && !value.schedule?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["schedule"],
+      message: "Для triggerType=cron нужно cron-выражение schedule.",
+    });
+  }
+  if (
+    trigger === "once" &&
+    !value.runAt &&
+    value.delaySeconds === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["runAt"],
+      message: "Для triggerType=once нужен runAt (ISO-8601) или delaySeconds.",
+    });
+  }
+  if (trigger === "once" && value.matrix) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["matrix"],
+      message: "One-shot нельзя комбинировать с matrix: матрица запускается только вручную.",
+    });
+  }
+  if (trigger !== "once" && (value.runAt || value.delaySeconds !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["runAt"],
+      message: "runAt/delaySeconds допустимы только при triggerType=once.",
+    });
+  }
 });
 
 const listTasksSchema = z.object({});
@@ -333,6 +388,20 @@ export const updateTaskSchema = z.object({
     .string()
     .optional()
     .describe("New cron expression. Keeps the current value when omitted."),
+  runAt: z
+    .string()
+    .optional()
+    .describe(
+      "New one-shot time in ISO-8601. Requires triggerType=once. Empty string clears it."
+    ),
+  delaySeconds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "New one-shot delay in seconds from now. Requires triggerType=once."
+    ),
   timezone: z
     .string()
     .optional()
@@ -382,7 +451,7 @@ export const updateTaskSchema = z.object({
     .optional()
     .describe("New error-chain task. Empty string clears it."),
   triggerType: z
-    .enum(["cron", "file", "mcp-event"])
+    .enum(["cron", "file", "mcp-event", "once"])
     .optional()
     .describe("New trigger type."),
   mcpEvent: z
@@ -419,6 +488,25 @@ export const updateTaskSchema = z.object({
     .describe(
       "New matrix configuration. Pass null to turn the matrix off (clones and aggregator are removed)."
     ),
+}).superRefine((value, ctx) => {
+  if (
+    value.triggerType !== undefined &&
+    value.triggerType !== "once" &&
+    (value.runAt || value.delaySeconds !== undefined)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["runAt"],
+      message: "runAt/delaySeconds допустимы только при triggerType=once.",
+    });
+  }
+  if (value.triggerType === "once" && value.matrix) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["matrix"],
+      message: "One-shot нельзя комбинировать с matrix.",
+    });
+  }
 });
 
 const pauseTaskSchema = z.object({
@@ -700,6 +788,8 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
   const {
     name,
     schedule,
+    runAt,
+    delaySeconds,
     prompt,
     timeoutSeconds,
     model,
@@ -725,10 +815,21 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
     notAfter,
   } = args;
 
+  let effectiveRunAt: string | undefined;
+  if ((triggerType ?? "cron") === "once") {
+    const normalized = normalizeOneShotRunAt({ runAt, delaySeconds });
+    if (!normalized.ok) {
+      return {
+        content: JSON.stringify({ success: false, error: normalized.error }),
+      };
+    }
+    effectiveRunAt = normalized.runAt;
+  }
+
   try {
     await schedulerCreateTask(
       name,
-      schedule,
+      schedule ?? "",
       prompt,
       timeoutSeconds,
       workingDirectory,
@@ -753,7 +854,9 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
       "create",
       timezone,
       notBefore,
-      notAfter
+      notAfter,
+      undefined,
+      effectiveRunAt
     );
   } catch (err: any) {
     return {
@@ -790,6 +893,7 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
         nextTaskOnSuccess: nextTaskOnSuccess?.trim() || null,
         nextTaskOnError: nextTaskOnError?.trim() || null,
         triggerType: triggerType ?? "cron",
+        runAt: effectiveRunAt ?? null,
         timezone: timezone?.trim() || null,
         notBefore: notBefore?.trim() || null,
         notAfter: notAfter?.trim() || null,
@@ -1152,16 +1256,47 @@ async function updateTaskFromInput(
     };
   }
 
+  // One-shot: без нового runAt/delaySeconds сохраняем прежнее время.
+  // При смене триггера на once время обязательно, иначе задача не запустится.
+  let runAt: string | undefined;
+  if (triggerType === "once") {
+    const candidateRunAt =
+      input.runAt !== undefined
+        ? input.runAt
+        : input.delaySeconds !== undefined
+        ? undefined
+        : previous.runAt;
+    const normalized = normalizeOneShotRunAt({
+      runAt: candidateRunAt,
+      delaySeconds: input.delaySeconds,
+    });
+    if (!normalized.ok) {
+      return {
+        success: false,
+        message: `Задача "${name}": ${normalized.error}`,
+      };
+    }
+    runAt = normalized.runAt;
+  }
+
   const matrixWas = previous.matrix;
   const matrixNext =
     input.matrix === undefined ? matrixWas : input.matrix ?? undefined;
+  if (triggerType === "once" && matrixNext) {
+    return {
+      success: false,
+      message:
+        `Задача "${name}": one-shot нельзя комбинировать с matrix. ` +
+        `Запустите матрицу вручную или используйте cron/file-триггер.`,
+    };
+  }
 
   try {
     // Обновление = пересоздание в планировщике с сохранением старых значений.
     await scheduler.deleteTask(name);
     await schedulerCreateTask(
       name,
-      schedule ?? "* * * * *",
+      schedule ?? "",
       prompt,
       input.timeoutSeconds ?? previous.timeoutSeconds,
       clearableString(input.workingDirectory, previous.workingDirectory),
@@ -1189,7 +1324,8 @@ async function updateTaskFromInput(
       timezone,
       notBefore,
       notAfter,
-      previous.pausedUntil
+      previous.pausedUntil,
+      runAt
     );
 
     // Матрица отключена при обновлении — убираем клонов и агрегатор.
@@ -1918,7 +2054,8 @@ const transferTasksExecute = wrapExecute<TransferArgs>(async (args) => {
         def.timezone,
         def.notBefore,
         def.notAfter,
-        def.pausedUntil
+        def.pausedUntil,
+        def.runAt
       );
       await saveTaskDefinition(def);
       imported.push(def.name);
@@ -2469,9 +2606,11 @@ export default Plugin.define({
           timezone,
           notBefore,
           notAfter,
+          runAt,
+          delaySeconds,
         } = input as {
           name: string;
-          schedule: string;
+          schedule?: string;
           prompt: string;
           retryCount?: number;
           retryDelay?: number;
@@ -2479,7 +2618,7 @@ export default Plugin.define({
           nextTaskOnSuccess?: string;
           nextTaskOnError?: string;
           dependsOn?: string[];
-          triggerType?: "cron" | "file" | "mcp-event";
+          triggerType?: "cron" | "file" | "mcp-event" | "once";
           watchPath?: string;
           workingDirectory?: string;
           model?: string;
@@ -2494,11 +2633,21 @@ export default Plugin.define({
           timezone?: string;
           notBefore?: string;
           notAfter?: string;
+          runAt?: string;
+          delaySeconds?: number;
         };
+        let effectiveRunAt: string | undefined;
+        if (triggerType === "once") {
+          const normalized = normalizeOneShotRunAt({ runAt, delaySeconds });
+          if (!normalized.ok) {
+            return { success: false, message: `Задача "${name}": ${normalized.error}` };
+          }
+          effectiveRunAt = normalized.runAt;
+        }
         try {
           await schedulerCreateTask(
             name,
-            schedule,
+            schedule ?? "",
             prompt,
             undefined,
             workingDirectory,
@@ -2523,7 +2672,9 @@ export default Plugin.define({
             "create",
             timezone,
             notBefore,
-            notAfter
+            notAfter,
+            undefined,
+            effectiveRunAt
           );
           return { success: true, message: `Задача "${name}" успешно создана.` };
         } catch (err: any) {
@@ -3174,7 +3325,8 @@ export default Plugin.define({
                 def.timezone,
                 def.notBefore,
                 def.notAfter,
-                def.pausedUntil
+                def.pausedUntil,
+                def.runAt
               );
               await saveTaskDefinition(def);
               imported.push(def.name);
@@ -3309,7 +3461,7 @@ async function schedulerCreateTask(
   qualityGate?: string,
   nextTaskOnSuccess?: string,
   nextTaskOnError?: string,
-  triggerType?: "cron" | "file" | "mcp-event",
+  triggerType?: "cron" | "file" | "mcp-event" | "once",
   watchPath?: string,
   dependsOn?: string[],
   model?: string,
@@ -3331,7 +3483,9 @@ async function schedulerCreateTask(
   /** Окончание окна "HH:MM"; может быть меньше notBefore (через полночь). */
   notAfter?: string,
   /** Пауза до момента ISO; после него задача возобновляется автоматически. */
-  pausedUntil?: string
+  pausedUntil?: string,
+  /** Абсолютное время однократного запуска (ISO, только triggerType=once). */
+  runAt?: string
 ): Promise<void> {
   const normalizedModel = model?.trim() || undefined;
   const normalizedPriority = normalizePriority(priority);
@@ -3350,6 +3504,16 @@ async function schedulerCreateTask(
         }
       : undefined;
   let effectiveTriggerType = triggerType ?? "cron";
+  // One-shot: нормализуем время до создания файлов и задачи в ОС.
+  // Для остальных триггеров runAt не имеет смысла и отбрасывается.
+  let effectiveRunAt: string | undefined;
+  if (effectiveTriggerType === "once") {
+    const normalized = normalizeOneShotRunAt({ runAt });
+    if (!normalized.ok) {
+      throw new Error(`Задача "${name}": ${normalized.error}`);
+    }
+    effectiveRunAt = normalized.runAt;
+  }
   // Role-scoped: нормализуем списки инструментов (trim, дедуп без регистра).
   // Пустой allowedTools — осознанная блокировка: «белый список из нуля
   // инструментов» это почти наверняка ошибка конфигурации.
@@ -3558,6 +3722,9 @@ async function schedulerCreateTask(
         deniedTools: normalizedDeniedTools,
         scheduleGate: wrapperGate,
         envFile: taskEnvFile,
+        ...(effectiveTriggerType === "once" && scheduler.platform === "darwin"
+          ? { oneShotCleanupCommand: buildLaunchdOneShotCleanup(sanitized) }
+          : {}),
       });
     }
   } catch (err: any) {
@@ -3572,6 +3739,7 @@ async function schedulerCreateTask(
       schedule,
       timeoutSeconds: timeoutSeconds ?? 3600,
       triggerType: effectiveTriggerType,
+      ...(effectiveRunAt ? { runAt: effectiveRunAt } : {}),
       workingDirectory: effectiveWorkingDirectory,
       logFile,
       model: normalizedModel,
@@ -3604,6 +3772,7 @@ async function schedulerCreateTask(
     nextTaskOnSuccess,
     nextTaskOnError,
     triggerType: effectiveTriggerType,
+    runAt: effectiveRunAt,
     watchPath: normalizedMatrix ? undefined : watchPath,
     timezone: normalizedTz,
     notBefore: normalizedNotBefore,
@@ -3874,7 +4043,11 @@ async function collectTasksView() {
       runsTotal: counts.total,
       runsSuccess: counts.success,
       runsError: counts.error,
-      nextRun: t.nextRunTime ? String(t.nextRunTime) : null,
+      // Для разовой задачи показываем запланированное время, а не пустое расписание.
+      nextRun: def?.triggerType === "once"
+        ? def?.runAt ?? (t.nextRunTime ? String(t.nextRunTime) : null)
+        : t.nextRunTime ? String(t.nextRunTime) : null,
+      runAt: def?.runAt ?? null,
       model: def?.model ?? null,
       priority: def?.priority ?? 5,
       beforeScript: def?.beforeScript ?? null,

@@ -81,8 +81,10 @@ const TaskItem = {
     beforeScript: { type: ["string", "null"] },
     /** Post-flight команда (null — не задана). */
     afterScript: { type: ["string", "null"] },
-    /** Тип триггера: "cron" (по умолчанию), "file" или "mcp-event". */
+    /** Тип триггера: "cron" (по умолчанию), "file", "mcp-event" или "once". */
     triggerType: { type: ["string", "null"] },
+    /** Время разового запуска (triggerType === "once"), ISO-8601; null для остальных. */
+    runAt: { type: ["string", "null"] },
     /** Параметры MCP-события (null — не MCP-триггер). */
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */
@@ -172,8 +174,12 @@ const CreateTaskInput = {
     beforeScript: { type: "string" },
     /** Команда после запуска (post-flight). */
     afterScript: { type: "string" },
-    /** Тип триггера: "cron" (по умолчанию), "file" или "mcp-event". */
+    /** Тип триггера: "cron" (по умолчанию; нужен schedule), "file", "mcp-event" или "once" (нужен runAt либо delaySeconds). */
     triggerType: { type: "string" },
+    /** Время разового запуска (triggerType === "once"), ISO-8601. Взаимоисключает schedule/newSchedule. */
+    runAt: { type: "string" },
+    /** Отложенный разовый запуск через N секунд (triggerType === "once"). Взаимоисключает runAt. */
+    delaySeconds: { type: "number" },
     /** Параметры MCP-события. */
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */
@@ -195,7 +201,7 @@ const CreateTaskInput = {
     /** Конец окна запуска "HH:MM"; может быть меньше notBefore (через полночь). */
     notAfter: { type: "string" },
   },
-  required: ["name", "schedule", "prompt"],
+  required: ["name", "prompt"],
 } as const;
 
 const CreateTaskOutput = {
@@ -707,8 +713,12 @@ const UpdateTaskInput = {
     beforeScript: { type: "string" },
     /** Команда после запуска (post-flight). */
     afterScript: { type: "string" },
-    /** Тип триггера: "cron" (по умолчанию), "file" или "mcp-event". */
+    /** Тип триггера: "cron" (по умолчанию; нужен schedule), "file", "mcp-event" или "once" (нужен runAt либо delaySeconds). */
     triggerType: { type: "string" },
+    /** Время разового запуска (triggerType === "once"), ISO-8601. Взаимоисключает schedule/newSchedule. */
+    runAt: { type: "string" },
+    /** Отложенный разовый запуск через N секунд (triggerType === "once"). Взаимоисключает runAt. */
+    delaySeconds: { type: "number" },
     /** Параметры MCP-события. */
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */

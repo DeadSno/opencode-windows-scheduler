@@ -37,6 +37,11 @@ export interface BashWrapperOptions {
   /** Post-flight команда: выполняется даже при ошибке основной задачи. */
   afterScript?: string;
   /**
+   * Команда самоочистки one-shot (например, выгрузка launchd-агента).
+   * Запускается в фоне после записи истории и не влияет на код возврата.
+   */
+  oneShotCleanupCommand?: string;
+  /**
    * Гейт расписания (спринт 19): проверка cron в таймзоне задачи и окна
    * запуска выполняется до lock и запуска opencode.
    */
@@ -82,6 +87,7 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     model,
     beforeScript,
     afterScript,
+    oneShotCleanupCommand,
     allowedTools,
     deniedTools,
     scheduleGate,
@@ -311,6 +317,14 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     "  fi",
     "fi",
     "",
+    // One-shot: снимаем задание с расписания после единственного запуска.
+    // История уже записана, поэтому фоновая очистка не влияет на результат.
+    ...(oneShotCleanupCommand
+      ? [
+          `(sleep 2; ${oneShotCleanupCommand}) >/dev/null 2>&1 &`,
+          "",
+        ]
+      : []),
     'exit "$EXIT_CODE"',
     "",
   ];

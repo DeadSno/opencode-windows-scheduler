@@ -31,11 +31,11 @@ Want to see it without installing OpenCode? `node scripts/demo-dashboard.mjs` st
 
 | Area | What you get |
 |---|---|
-| Scheduling | cron expressions, native OS scheduler (Windows / macOS / Linux), timezone-free local time, pause/resume |
+| Scheduling | cron expressions, one-shot runs via `runAt` / `delaySeconds`, native OS scheduler (Windows / macOS / Linux), timezone-free local time, pause/resume |
 | Reliability | lock-file no-overlap protection, timeouts with hard kill, retries with delay, crash recovery |
 | Quality | Quality Gate command, before/after hooks, per-task allowed/denied tool lists |
 | Orchestration | `dependsOn` DAG, `nextTaskOnSuccess` / `nextTaskOnError` chains, matrix fan-out (parallel/sequential, `continue`/`stop`, concurrency, per-workspace overrides, aggregator task) |
-| Triggers | cron, file change (chokidar), MCP events, incoming webhooks (`POST /api/hooks/:task` with HMAC) |
+| Triggers | cron, one-shot (`triggerType: "once"`), file change (chokidar), MCP events, incoming webhooks (`POST /api/hooks/:task` with HMAC) |
 | Multi-repo | workspaces with path validation, per-workspace runs, matrix over one parent task |
 | Observability | SQLite history (success / error / timeout / partial / running), metrics (duration, tokens, cost), JSONL run logs with `/api/logs`, Prometheus `/metrics`, OTLP export, per-task logs, local web dashboard with 14-day analytics, history retention and CSV/JSON export |
 | Operations | dry-run preview, export/import JSON, templates, webhook notifications, settings |
@@ -77,7 +77,7 @@ The agent gets the full feature set — 22 tools covering scheduling, pipelines,
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `schedule_task` | `name`, `schedule`, `prompt`, optional `timeoutSeconds`, `model`, `priority`, `beforeScript`, `afterScript`, `qualityGate`, `dependsOn`, `retryCount`, `retryDelay`, `nextTaskOnSuccess`, `nextTaskOnError`, `triggerType`, `mcpEvent`, `workingDirectory`, `workspaceId`, `allowedTools`, `deniedTools`, `matrix` | Registers a job with the OS scheduler (cron, file or MCP-event trigger) |
+| `schedule_task` | `name`, `prompt`, `schedule` for cron or `runAt` / `delaySeconds` for one-shot, optional `timeoutSeconds`, `model`, `priority`, `beforeScript`, `afterScript`, `qualityGate`, `dependsOn`, `retryCount`, `retryDelay`, `nextTaskOnSuccess`, `nextTaskOnError`, `triggerType`, `mcpEvent`, `workingDirectory`, `workspaceId`, `allowedTools`, `deniedTools`, `matrix` | Registers a job with the OS scheduler (cron, one-shot, file or MCP-event trigger) |
 | `list_tasks` | — | Returns jobs with schedule, status, next run, chains, workspace and matrix summary |
 | `update_task` | `name` + any field to change | Partial update; omitted fields keep their values, empty values clear them, `matrix: null` removes the matrix |
 | `delete_task` | `name` | Deletes a job (a matrix parent deletes clones and aggregator) |

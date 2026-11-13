@@ -7,6 +7,7 @@ import {
   saveTask,
   deleteTask,
 } from "./db/tasks-repo.js";
+import { normalizeOneShotRunAt } from "./core/one-shot.js";
 import { isValidIanaTimeZone, validateLaunchWindow } from "./core/schedule-v2.js";
 
 /** Триггер задачи по событию из MCP-шины. */
@@ -112,10 +113,13 @@ export interface TaskDefinition {
    */
   dependsOn?: string[];
   /**
-   * Чем запускается задача: по расписанию ("cron", по умолчанию) или
-   * при изменении файла ("file"). Для "file" расписание не используется.
+   * Чем запускается задача: по расписанию ("cron", по умолчанию),
+   * при изменении файла ("file"), по MCP-событию ("mcp-event") или
+   * однократно в runAt ("once"). Для file/mcp-event/once расписание не нужно.
    */
-  triggerType?: "cron" | "file" | "mcp-event";
+  triggerType?: "cron" | "file" | "mcp-event" | "once";
+  /** Абсолютное время однократного запуска (ISO-8601, triggerType "once"). */
+  runAt?: string;
   /** Путь к файлу/папке, изменения которого запускают задачу (для triggerType === "file"). */
   watchPath?: string;
   /** Параметры MCP-события (для triggerType === "mcp-event"). */
@@ -279,6 +283,12 @@ export async function buildExportJson(
       ...(definition?.triggerType === "mcp-event"
         ? { triggerType: "mcp-event" as const }
         : {}),
+      ...(definition?.triggerType === "once"
+        ? {
+            triggerType: "once" as const,
+            ...(definition.runAt ? { runAt: definition.runAt } : {}),
+          }
+        : {}),
       ...(definition?.watchPath ? { watchPath: definition.watchPath } : {}),
       ...(definition?.timezone ? { timezone: definition.timezone } : {}),
       ...(definition?.notBefore ? { notBefore: definition.notBefore } : {}),
@@ -368,14 +378,20 @@ export function parseImportJson(raw: string): ParsedImport {
     const schedule =
       typeof source.schedule === "string" ? source.schedule.trim() : "";
     const prompt = typeof source.prompt === "string" ? source.prompt.trim() : "";
-    const triggerType: "cron" | "file" | "mcp-event" =
+    const triggerType: "cron" | "file" | "mcp-event" | "once" =
       source.triggerType === "file"
         ? "file"
         : source.triggerType === "mcp-event"
         ? "mcp-event"
+        : source.triggerType === "once"
+        ? "once"
         : "cron";
     const watchPath =
       typeof source.watchPath === "string" ? source.watchPath.trim() : "";
+    const rawRunAt =
+      typeof source.runAt === "string" ? source.runAt.trim() : "";
+    const rawDelaySeconds =
+      typeof source.delaySeconds === "number" ? source.delaySeconds : undefined;
 
     const rawMcpEvent =
       source.mcpEvent && typeof source.mcpEvent === "object"
@@ -406,17 +422,36 @@ export function parseImportJson(raw: string): ParsedImport {
     const watchOk =
       triggerType === "file" ? Boolean(watchPath) || Boolean(matrixParentHint) : true;
     const eventOk = triggerType === "mcp-event" ? Boolean(mcpEvent?.event) : true;
+    const onceOk =
+      triggerType === "once" ? Boolean(rawRunAt) || rawDelaySeconds !== undefined : true;
 
-    if (!name || !scheduleOk || !watchOk || !eventOk || !prompt) {
+    if (!name || !scheduleOk || !watchOk || !eventOk || !onceOk || !prompt) {
       errors.push(
         `Запись ${position}${name ? ` (${name})` : ""}: нужны непустые поля name и prompt` +
           (triggerType === "file"
             ? ", а также watchPath для файлового триггера."
             : triggerType === "mcp-event"
             ? ", а также mcpEvent.event для MCP-триггера."
+            : triggerType === "once"
+            ? ", а также runAt или delaySeconds для one-shot."
             : ", а также schedule.")
       );
       return;
+    }
+
+    let runAt: string | undefined;
+    if (triggerType === "once") {
+      const normalized = normalizeOneShotRunAt({
+        runAt: rawRunAt || undefined,
+        delaySeconds: rawDelaySeconds,
+      });
+      if (!normalized.ok) {
+        errors.push(
+          `Запись ${position}${name ? ` (${name})` : ""}: ${normalized.error}`
+        );
+        return;
+      }
+      runAt = normalized.runAt;
     }
 
     const timeoutSeconds =
@@ -675,6 +710,7 @@ export function parseImportJson(raw: string): ParsedImport {
       ...(nextTaskOnError !== undefined ? { nextTaskOnError } : {}),
       ...(dependsOn !== undefined ? { dependsOn } : {}),
       ...(triggerType === "cron" ? {} : { triggerType }),
+      ...(runAt ? { runAt } : {}),
       ...(watchPath ? { watchPath } : {}),
       ...(timezone !== undefined ? { timezone } : {}),
       ...(notBefore !== undefined ? { notBefore } : {}),

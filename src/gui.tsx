@@ -87,7 +87,9 @@ interface Job {
   beforeScript?: string
   /** Post-flight команда (undefined — не задана). */
   afterScript?: string
-  triggerType?: "cron" | "file" | "mcp-event"
+  triggerType?: "cron" | "file" | "mcp-event" | "once"
+  /** Для triggerType "once" — время одного запуска (ISO-8601). */
+  runAt?: string | null
   /** Параметры MCP-события. */
   mcpEvent?: { server: string; event: string; filter?: string }
   watchPath?: string
@@ -615,9 +617,12 @@ export default Plugin.define({
     const [beforeScript, setBeforeScript] = createSignal("")
     const [afterScript, setAfterScript] = createSignal("")
 
-    // Триггеры (cron / file / mcp-event) и рабочая директория
-    const [triggerType, setTriggerType] = createSignal<"cron" | "file" | "mcp-event">("cron")
+    // Триггеры (cron / file / mcp-event / once) и рабочая директория
+    const [triggerType, setTriggerType] = createSignal<"cron" | "file" | "mcp-event" | "once">("cron")
     const [watchPath, setWatchPath] = createSignal("")
+    // Разовое время: ISO-8601 или задержка в секундах от нажатия "Запланировать".
+    const [runAt, setRunAt] = createSignal("")
+    const [delaySeconds, setDelaySeconds] = createSignal("")
     // Часовой пояс и окно запуска (Спринт 19). Пусто = системный пояс / без окна.
     const [timezone, setTimezone] = createSignal("")
     const [notBefore, setNotBefore] = createSignal("")
@@ -1232,7 +1237,8 @@ export default Plugin.define({
           priority: typeof t.priority === "number" ? t.priority : DEFAULT_PRIORITY,
           beforeScript: t.beforeScript ?? undefined,
           afterScript: t.afterScript ?? undefined,
-          triggerType: (t.triggerType ?? "cron") as "cron" | "file" | "mcp-event",
+          triggerType: (t.triggerType ?? "cron") as "cron" | "file" | "mcp-event" | "once",
+          runAt: t.runAt ?? undefined,
           mcpEvent: t.mcpEvent ?? undefined,
           watchPath: t.watchPath ?? undefined,
           timezone: t.timezone ?? undefined,
@@ -1321,6 +1327,12 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          ...(triggerType() === "once"
+            ? {
+                runAt: (runAt() || "").trim() || undefined,
+                delaySeconds: (delaySeconds() || "").trim() ? Number(delaySeconds().trim()) : undefined,
+              }
+            : {}),
           timezone: (timezone() || "").trim() || undefined,
           notBefore: (notBefore() || "").trim() || undefined,
           notAfter: (notAfter() || "").trim() || undefined,
@@ -1365,6 +1377,8 @@ export default Plugin.define({
         setAfterScript("")
         setTriggerType("cron")
         setWatchPath("")
+        setRunAt("")
+        setDelaySeconds("")
     setTimezone("")
     setNotBefore("")
     setNotAfter("")
@@ -1575,6 +1589,12 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          ...(triggerType() === "once"
+            ? {
+                runAt: (runAt() || "").trim() || undefined,
+                delaySeconds: (delaySeconds() || "").trim() ? Number(delaySeconds().trim()) : undefined,
+              }
+            : {}),
           timezone: (timezone() || "").trim() || undefined,
           notBefore: (notBefore() || "").trim() || undefined,
           notAfter: (notAfter() || "").trim() || undefined,
@@ -1612,6 +1632,8 @@ export default Plugin.define({
         setAfterScript("")
         setTriggerType("cron")
         setWatchPath("")
+        setRunAt("")
+        setDelaySeconds("")
     setTimezone("")
     setNotBefore("")
     setNotAfter("")
@@ -1652,6 +1674,8 @@ export default Plugin.define({
       setAfterScript(job.afterScript ?? "")
       setTriggerType(job.triggerType ?? "cron")
       setWatchPath(job.watchPath ?? "")
+      setRunAt(job.runAt ?? "")
+      setDelaySeconds("")
       setTimezone(job.timezone ?? "")
       setNotBefore(job.notBefore ?? "")
       setNotAfter(job.notAfter ?? "")
@@ -1693,6 +1717,13 @@ export default Plugin.define({
 
     const showCustomCron = cronPreset() === "__custom__"
     const isEditing = editingJob() !== null
+    // Валидация формы: для cron нужен schedule, для once — runAt либо delaySeconds.
+    const canSubmit = () =>
+      !!(name() || "").trim() &&
+      !!(prompt() || "").trim() &&
+      (triggerType() !== "cron" || !!(schedule() || "").trim()) &&
+      (triggerType() !== "once" || !!(runAt() || "").trim() || !!(delaySeconds() || "").trim()) &&
+      (!matrixMode() || matrixWorkspaceIds().length > 0)
 
     const jobsArr = () => jobs() ?? []
     const visibleJobs = () => {
@@ -2961,7 +2992,7 @@ export default Plugin.define({
 
               <div style="display:block;width:100%;margin-bottom:12px">
                 <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Тип триггера</label>
-                <div style="display:flex;gap:8px">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
                   <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
                     <input
                       type="radio"
@@ -2991,6 +3022,16 @@ export default Plugin.define({
                       style="accent-color:#007acc"
                     />
                     MCP Event
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                    <input
+                      type="radio"
+                      name="triggerType"
+                      checked={triggerType() === "once"}
+                      onChange={() => setTriggerType("once")}
+                      style="accent-color:#007acc"
+                    />
+                    Разово
                   </label>
                 </div>
               </div>
@@ -3042,6 +3083,29 @@ export default Plugin.define({
                     <div style="font-size:11px;color:#8e8e93;margin-top:6px">key=value сравнивается с полем payload, иначе фильтр считается regex/подстрокой. События приходят через RPC emit_event.</div>
                   </div>
                 </>
+              )}
+
+              {triggerType() === "once" && (
+                <div style="display:block;width:100%;margin-bottom:12px">
+                  <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Время однократного запуска</label>
+                  <input
+                    type="text"
+                    value={runAt() || ""}
+                    onInput={(e) => setRunAt(e.currentTarget.value)}
+                    placeholder="2026-11-14T10:00:00.000Z или локальная дата"
+                    style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                  />
+                  <div style="font-size:11px;color:#8e8e93;margin:6px 0">Или задержка в секундах от нажатия кнопки «Создать задачу»:</div>
+                  <input
+                    type="number"
+                    min="1"
+                    value={delaySeconds() || ""}
+                    onInput={(e) => setDelaySeconds(e.currentTarget.value)}
+                    placeholder="например, 3600"
+                    style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                  />
+                  <div style="font-size:11px;color:#8e8e93;margin-top:6px">Приоритет у runAt: если задано время, delaySeconds игнорируется. После запуска задача больше не повторится.</div>
+                </div>
               )}
 
               <div
@@ -3421,14 +3485,14 @@ export default Plugin.define({
                 </button>
                 <button
                   onClick={handleCreate}
-                  disabled={busy() || !(name() || "").trim() || !(schedule() || "").trim() || !(prompt() || "").trim() || (matrixMode() && matrixWorkspaceIds().length === 0)}
-                  style={`display:block;width:100%;padding:10px;margin-top:8px;background:${busy() ? "#666" : "#007acc"};color:white;border-radius:6px;border:none;cursor:${busy() || (!(name() || "").trim() || !(schedule() || "").trim() || !(prompt() || "").trim()) ? "not-allowed" : "pointer"};font-size:13px;font-weight:500;opacity:${(busy() || !(name() || "").trim() || !(schedule() || "").trim() || !(prompt() || "").trim()) ? 0.6 : 1}`}
+                  disabled={busy() || !canSubmit()}
+                  style={`display:block;width:100%;padding:10px;margin-top:8px;background:${busy() ? "#666" : "#007acc"};color:white;border-radius:6px;border:none;cursor:${busy() || !canSubmit() ? "not-allowed" : "pointer"};font-size:13px;font-weight:500;opacity:${busy() || !canSubmit() ? 0.6 : 1}`}
                 >
                   {busy() ? "Создание..." : isEditing ? "Сохранить" : "Создать задачу"}
                 </button>
                 {isEditing && (
                   <button
-                    onClick={() => { setEditingJob(null); setName(""); setSchedule("* * * * *"); setPrompt(""); setModel(""); setPriority(DEFAULT_PRIORITY); setRetryCount(0); setRetryDelay(60); setQualityGate(""); setDependsOn([]); setBeforeScript(""); setAfterScript(""); setTriggerType("cron"); setWatchPath(""); setTimezone(""); setNotBefore(""); setNotAfter(""); setMcpServer(""); setMcpEventName(""); setMcpFilter(""); setWorkingDirectory(""); setWorkspaceId(""); setAllowedTools([]); setDeniedTools([]); resetMatrixForm(); setCronPreset("* * * * *"); setCronError("") }}
+                    onClick={() => { setEditingJob(null); setName(""); setSchedule("* * * * *"); setPrompt(""); setModel(""); setPriority(DEFAULT_PRIORITY); setRetryCount(0); setRetryDelay(60); setQualityGate(""); setDependsOn([]); setBeforeScript(""); setAfterScript(""); setTriggerType("cron"); setWatchPath(""); setRunAt(""); setDelaySeconds(""); setTimezone(""); setNotBefore(""); setNotAfter(""); setMcpServer(""); setMcpEventName(""); setMcpFilter(""); setWorkingDirectory(""); setWorkspaceId(""); setAllowedTools([]); setDeniedTools([]); resetMatrixForm(); setCronPreset("* * * * *"); setCronError("") }}
                     style="background:transparent;border:1px solid #333;border-radius:6px;padding:8px 16px;color:#ff3b30;cursor:pointer;font-size:13px;width:100%"
                   >
                     Отмена

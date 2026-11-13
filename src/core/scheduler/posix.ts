@@ -40,6 +40,7 @@ export abstract class PosixSchedulerBase implements SchedulerBackend {
       logFile: options.logFile,
       workingDirectory: options.workingDirectory,
       triggerType: options.triggerType ?? "cron",
+      ...(options.runAt ? { runAt: options.runAt } : {}),
       paused: false,
       createdAt: new Date().toISOString(),
       ...(options.model ? { model: options.model } : {}),
@@ -48,6 +49,8 @@ export abstract class PosixSchedulerBase implements SchedulerBackend {
 
     await this.registry.upsert(entry);
     await this.installEntry(entry);
+    // installEntry может записать atJobId для Linux one-shot.
+    await this.registry.upsert(entry);
   }
 
   async deleteTask(name: string): Promise<void> {

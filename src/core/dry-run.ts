@@ -21,7 +21,7 @@ export interface DryRunRoleScoped {
 export interface DryRunTaskItem {
   name: string;
   order: number;
-  trigger: "manual" | "cron" | "dag";
+  trigger: "manual" | "cron" | "dag" | "once";
   cwd: string;
   command: string;
   workspace?: { name: string; path: string };
@@ -218,10 +218,13 @@ export async function simulatePipeline(taskName: string): Promise<DryRunReport> 
 
     // Триггер: корневая задача (или клон корневой матрицы) — manual,
     // остальные попали в конвейер через dependsOn — dag.
+    const triggerType = def.triggerType ?? "cron";
     const trigger: DryRunTaskItem["trigger"] =
-      lower === rootLower || (matrixParent && matrixParent.toLowerCase() === rootLower)
-        ? "manual"
-        : "dag";
+      triggerType === "once"
+        ? "once"
+        : lower === rootLower || (matrixParent && matrixParent.toLowerCase() === rootLower)
+          ? "manual"
+          : "dag";
 
     // Команда, которую выполнит обёртка.
     const modelArg = def.model ? ` --model ${def.model}` : "";
@@ -271,7 +274,17 @@ export async function simulatePipeline(taskName: string): Promise<DryRunReport> 
     // считаем в часовом поясе задачи, чтобы dry-run показывал то же время, что
     // увидит планировщик после регистрации.
     let scheduleDetails: DryRunTaskItem["scheduleDetails"];
-    if ((def.triggerType ?? "cron") === "cron" && def.schedule) {
+    if (triggerType === "once" && def.runAt) {
+      // Для разовой задачи dry-run показывает единственное запланированное время.
+      scheduleDetails = {
+        cron: "once",
+        timezone: def.timezone ?? null,
+        notBefore: def.notBefore ?? null,
+        notAfter: def.notAfter ?? null,
+        pausedUntil: def.pausedUntil ?? null,
+        nextRuns: [def.runAt],
+      };
+    } else if (triggerType === "cron" && def.schedule) {
       const runs: string[] = [];
       try {
         let cursor = new Date();

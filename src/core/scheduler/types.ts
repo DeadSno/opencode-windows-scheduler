@@ -1,7 +1,7 @@
 import type { ScheduledTaskInfo } from "../../types.js";
 
 /** Чем запускается задача. */
-export type TriggerType = "cron" | "file" | "mcp-event";
+export type TriggerType = "cron" | "file" | "mcp-event" | "once";
 
 /**
  * Параметры создания задачи. Бэкенд сам решает, как преобразовать cron
@@ -16,12 +16,14 @@ export interface CreateTaskOptions {
    *  - Linux/macOS: .sh с вызовом `opencode run`.
    */
   command: string;
-  /** 5-полевое cron-выражение. Игнорируется при триггерах file/mcp-event. */
+  /** 5-полевое cron-выражение. Игнорируется при триггерах file/mcp-event/once. */
   schedule: string;
   /** Таймаут выполнения в секундах (используется обёрткой). */
   timeoutSeconds?: number;
-  /** "cron" (по умолчанию), "file" или "mcp-event". */
+  /** "cron" (по умолчанию), "file", "mcp-event" или "once". */
   triggerType?: TriggerType;
+  /** Абсолютное время однократного запуска (ISO-8601, только для once). */
+  runAt?: string;
   /** Рабочая директория задачи (для POSIX-бэкендов попадает в cron/plist). */
   workingDirectory?: string;
   /** Путь к файлу лога (для POSIX-бэкендов — перенаправление вывода). */

@@ -17,6 +17,10 @@ export interface RegistryEntry {
   logFile?: string;
   workingDirectory?: string;
   triggerType: TriggerType;
+  /** Абсолютное время однократного запуска (ISO-8601, только для once). */
+  runAt?: string;
+  /** Идентификатор задания `at` на Linux (для отмены one-shot). */
+  atJobId?: string;
   paused: boolean;
   createdAt: string;
   /** LLM-модель задачи (опционально). */

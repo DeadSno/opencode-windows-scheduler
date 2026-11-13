@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { sanitizeName } from "../../types.js";
+import { buildLaunchdCalendar } from "../one-shot.js";
 import { PosixSchedulerBase } from "./posix.js";
 import type { RegistryEntry } from "./registry.js";
 
@@ -94,10 +95,28 @@ export function cronToLaunchdSchedule(cron: string): LaunchdSchedule {
 
 /** Собирает XML plist для задачи. */
 function buildPlist(label: string, entry: RegistryEntry): string {
-  const schedule =
-    entry.triggerType !== "cron"
-      ? { interval: 315_360_000 } // file/mcp-event: 10 лет — фактически «никогда».
-      : cronToLaunchdSchedule(entry.schedule);
+  const schedule: {
+    interval?: number;
+    calendar?: {
+      Minute?: number;
+      Hour?: number;
+      Weekday?: number;
+      Month?: number;
+      Day?: number;
+    };
+  } =
+    entry.triggerType === "once"
+      ? (() => {
+          if (!entry.runAt) {
+            throw new Error(
+              `Задача "${entry.name}": для one-shot не задано runAt.`
+            );
+          }
+          return { calendar: buildLaunchdCalendar(entry.runAt) };
+        })()
+      : entry.triggerType !== "cron"
+        ? { interval: 315_360_000 } // file/mcp-event: 10 лет — фактически «никогда».
+        : cronToLaunchdSchedule(entry.schedule);
 
   const scheduleXml: string[] = [];
   if (schedule.interval !== undefined) {
@@ -124,6 +143,18 @@ function buildPlist(label: string, entry: RegistryEntry): string {
       scheduleXml.push(
         "    <key>Weekday</key>",
         `    <integer>${schedule.calendar.Weekday}</integer>`
+      );
+    }
+    if (schedule.calendar.Month !== undefined) {
+      scheduleXml.push(
+        "    <key>Month</key>",
+        `    <integer>${schedule.calendar.Month}</integer>`
+      );
+    }
+    if (schedule.calendar.Day !== undefined) {
+      scheduleXml.push(
+        "    <key>Day</key>",
+        `    <integer>${schedule.calendar.Day}</integer>`
       );
     }
     scheduleXml.push("  </dict>");

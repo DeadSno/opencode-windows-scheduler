@@ -4,6 +4,7 @@ import iconv from "iconv-lite";
 import type { ScheduledTaskInfo } from "../../types.js";
 import { TASK_FOLDER, TASK_FOLDER_NAME } from "../../types.js";
 import { buildScheduleFlags, convertCronToSchTasks } from "../cron-to-schtasks.js";
+import { buildWindowsOneShotFlags } from "../one-shot.js";
 import { needsPollMode } from "../schedule-v2.js";
 import type {
   CreateTaskOptions,
@@ -138,7 +139,16 @@ export class WindowsScheduler implements SchedulerBackend {
 
     let scheduleFlags: string[];
 
-    if (triggerType && triggerType !== "cron") {
+    if (triggerType === "once") {
+      // Настоящий one-shot: Windows сам удалит задачу из расписания после
+      // единственного запуска, повторных срабатываний не будет.
+      if (!options.runAt) {
+        throw new Error(
+          `Задача "${name}": для triggerType=once не передано время runAt.`
+        );
+      }
+      scheduleFlags = buildWindowsOneShotFlags(options.runAt);
+    } else if (triggerType && triggerType !== "cron") {
       // Файловый или MCP-триггер: однократный запуск в далёком будущем.
       // Активация — только вручную (runTask / файловый watcher / emit_event).
       scheduleFlags = ["/sc", "ONCE", "/sd", "31.12.2099", "/st", "00:00"];

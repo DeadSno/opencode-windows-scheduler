@@ -1774,6 +1774,12 @@ function renderPage(): string {
       ? '👁️ файл: ' + (t.watchPath || '')
       : t.triggerType === 'mcp-event'
       ? '📡 ' + ((t.mcpEvent && t.mcpEvent.event) || 'MCP Event')
+      : t.triggerType === 'once'
+      ? '⏱ ' + (function () {
+          if (!t.runAt) return '—';
+          var d = new Date(t.runAt);
+          return isNaN(d.getTime()) ? t.runAt : d.toLocaleString('ru-RU');
+        })()
       : (t.schedule || '—');
     var nameHtml = esc(t.name);
     var matrixLimit = t.matrix && t.matrix.concurrency
