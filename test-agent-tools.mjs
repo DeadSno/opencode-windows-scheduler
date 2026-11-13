@@ -9,6 +9,7 @@ import path from "node:path";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ws-scheduler-agent-"));
 process.env.APPDATA = tempRoot;
+process.env.OPENCODE_SCHEDULER_HOME = path.join(tempRoot, "opencode", "windows-scheduler");
 
 const {
   scheduleTaskSchema,

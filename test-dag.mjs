@@ -98,6 +98,7 @@ ok("DAG: имена сравниваются без учёта регистра"
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scheduler-dag-"));
 const appData = path.join(tempRoot, "AppData");
 const pluginDir = path.join(appData, "opencode", "windows-scheduler");
+process.env.OPENCODE_SCHEDULER_HOME = pluginDir;
 await fs.mkdir(pluginDir, { recursive: true });
 
 const recorder = path.resolve("dist/core/record-history.js");

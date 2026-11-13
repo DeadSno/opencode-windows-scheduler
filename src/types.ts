@@ -17,6 +17,10 @@ export const TASK_FOLDER_NAME = "windows-scheduler";
  *              ~/.config/opencode/windows-scheduler.
  */
 function resolvePluginDir(): string {
+  // Explicit override (tests, custom installations). Takes precedence on every platform.
+  const custom = process.env.OPENCODE_SCHEDULER_HOME?.trim();
+  if (custom) return path.resolve(custom);
+
   if (process.platform === "win32") {
     const base = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
     return path.join(base, "opencode", TASK_FOLDER_NAME);

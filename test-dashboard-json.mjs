@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 // Изолируем PLUGIN_DIR (history.json/metrics.json) ДО импорта сервера.
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sched-json-test-"));
 process.env.APPDATA = tempRoot;
+process.env.OPENCODE_SCHEDULER_HOME = path.join(tempRoot, "opencode", "windows-scheduler");
 
 const {
   startDashboardServer,

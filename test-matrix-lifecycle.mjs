@@ -8,6 +8,7 @@ import path from "node:path";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ws-scheduler-matrix-lc-"));
 process.env.APPDATA = tempRoot;
+process.env.OPENCODE_SCHEDULER_HOME = path.join(tempRoot, "opencode", "windows-scheduler");
 
 const { initDb, closeDb } = await import("./dist/db/index.js");
 const { saveTask, getTask, deleteTask, listMatrixClones, listTasks } = await import(

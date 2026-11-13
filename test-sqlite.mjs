@@ -8,6 +8,7 @@ import path from "node:path";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sched-sqlite-test-"));
 process.env.APPDATA = tempRoot;
+process.env.OPENCODE_SCHEDULER_HOME = path.join(tempRoot, "opencode", "windows-scheduler");
 
 const pluginDir = path.join(tempRoot, "opencode", "windows-scheduler");
 fs.mkdirSync(pluginDir, { recursive: true });

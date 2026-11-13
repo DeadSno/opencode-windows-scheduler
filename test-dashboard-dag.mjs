@@ -35,6 +35,7 @@ await fs.writeFile(
 );
 
 process.env.APPDATA = appData;
+process.env.OPENCODE_SCHEDULER_HOME = path.join(appData, "opencode", "windows-scheduler");
 
 // Спринт 12: дашборд читает SQLite. Переносим тестовый history.json в БД
 // той же миграцией, что и при реальном обновлении плагина.
