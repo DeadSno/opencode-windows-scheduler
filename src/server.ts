@@ -11,6 +11,16 @@ import { checkpointDb, getDbFile, getDbStatus } from "./db/index.js";
 import { listWorkspaces } from "./workspaces.js";
 import { getProfileName, getProfilePort } from "./profiles.js";
 import { simulatePipeline } from "./core/dry-run.js";
+import { loadSettings } from "./settings.js";
+import {
+  authenticateHookRequest,
+  extractHookSignature,
+  extractHookToken,
+  readRequestBody,
+} from "./integrations.js";
+import { appendStructuredLog, readStructuredLogs } from "./core/structured-log.js";
+import { PROMETHEUS_CONTENT_TYPE, renderPrometheusMetrics } from "./core/prometheus.js";
+import { buildOtlpExport } from "./core/otel.js";
 
 /**
  * Локальный веб-дашборд (Спринт 5).
@@ -501,13 +511,15 @@ async function handleRequest(
       pathname === "/api/export-db" ||
       pathname === "/api/workspaces" ||
       pathname === "/api/health" ||
+      pathname === "/api/logs" ||
+      pathname === "/metrics" ||
       /^\/api\/dry-run\//.test(pathname) ||
       /^\/api\/matrix\//.test(pathname);
     if (knownGet && req.method !== "GET") {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-    const knownPost = /^\/api\/(run|delete)\//.test(pathname);
+    const knownPost = /^\/api\/(run|delete|hooks)\//.test(pathname);
     if (knownPost && req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
@@ -530,6 +542,53 @@ async function handleRequest(
         profile: getProfileName(),
         queueDepth: countRunningRecords(),
         db: getDbStatus(),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/metrics") {
+      send(res, 200, PROMETHEUS_CONTENT_TYPE, renderPrometheusMetrics());
+      return;
+    }
+
+    // Машиночитаемые логи запусков (Спринт 22): JSONL + фильтры.
+    if (req.method === "GET" && pathname === "/api/logs") {
+      const task = url.searchParams.get("task") ?? undefined;
+      const status = url.searchParams.get("status") ?? undefined;
+      const event = url.searchParams.get("event") ?? undefined;
+      const since = url.searchParams.get("since") ?? undefined;
+      const until = url.searchParams.get("until") ?? undefined;
+      const limitRaw = Number(url.searchParams.get("limit") ?? 200);
+      if (since && Number.isNaN(Date.parse(since))) {
+        sendJson(res, 400, { error: "Некорректный параметр since: ожидается ISO-дата." });
+        return;
+      }
+      if (until && Number.isNaN(Date.parse(until))) {
+        sendJson(res, 400, { error: "Некорректный параметр until: ожидается ISO-дата." });
+        return;
+      }
+      const limit = Number.isFinite(limitRaw)
+        ? Math.max(1, Math.min(5000, Math.floor(limitRaw)))
+        : 200;
+      const result = readStructuredLogs({ task, status, event, since, until, limit });
+      if ((url.searchParams.get("format") || "").toLowerCase() === "jsonl") {
+        const body = result.records.map((record) => JSON.stringify(record)).join("\n");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        sendAttachment(
+          res,
+          200,
+          "application/x-ndjson; charset=utf-8",
+          body ? `${body}\n` : "",
+          `logs-${stamp}.jsonl`
+        );
+        return;
+      }
+      sendJson(res, 200, {
+        records: result.records,
+        total: result.total,
+        malformed: result.malformed,
+        limit,
+        filters: { task: task ?? null, status: status ?? null, event: event ?? null, since: since ?? null, until: until ?? null },
       });
       return;
     }
@@ -653,16 +712,26 @@ async function handleRequest(
       return;
     }
 
-    // Экспорт истории: CSV (для Excel) или JSON (для скриптов).
+    // Экспорт истории: CSV (для Excel), JSON (для скриптов) или OTLP/JSON.
     if (req.method === "GET" && pathname === "/api/history/export") {
       const format = (url.searchParams.get("format") || "csv").toLowerCase();
-      if (format !== "csv" && format !== "json") {
-        sendJson(res, 400, { error: "Неподдерживаемый формат экспорта. Допустимые: csv, json." });
+      if (format !== "csv" && format !== "json" && format !== "otlp") {
+        sendJson(res, 400, {
+          error: "Неподдерживаемый формат экспорта. Допустимые: csv, json, otlp.",
+        });
         return;
       }
       const records = getHistory(null, 100000);
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      if (format === "json") {
+      if (format === "otlp") {
+        sendAttachment(
+          res,
+          200,
+          "application/json; charset=utf-8",
+          JSON.stringify(buildOtlpExport(records), null, 2),
+          `history-${stamp}.otlp.json`
+        );
+      } else if (format === "json") {
         sendAttachment(
           res,
           200,
@@ -724,6 +793,107 @@ async function handleRequest(
             err instanceof Error ? err.message : String(err)
           }`,
         });
+      }
+      return;
+    }
+
+    // Входящий webhook-триггер (Спринт 22): POST /api/hooks/:task?token=…
+    const hookMatch = req.method === "POST" && pathname.match(/^\/api\/hooks\/(.+)$/);
+    if (hookMatch) {
+      const taskName = hookMatch[1].replace(/\/+$/, "").trim();
+      const remote = req.socket.remoteAddress ?? null;
+      const declaredBytes = Number(req.headers["content-length"]) || 0;
+      const timestampHeader = req.headers["x-scheduler-timestamp"];
+      const timestamp = Array.isArray(timestampHeader)
+        ? timestampHeader[0] ?? null
+        : timestampHeader ?? null;
+      const logHook = (
+        httpStatus: number,
+        status: "accepted" | "rejected",
+        reason?: string,
+        payloadBytes = declaredBytes
+      ) => {
+        appendStructuredLog({
+          event: "hook.received",
+          task: taskName || undefined,
+          status,
+          source: "hook",
+          httpStatus,
+          remote,
+          payloadBytes,
+          reason,
+        });
+      };
+
+      if (!taskName) {
+        logHook(400, "rejected", "Не передано имя задачи.");
+        sendJson(res, 400, { success: false, error: "Не передано имя задачи." });
+        return;
+      }
+
+      const settings = await loadSettings();
+      const hooks = settings.integrations.hooks;
+      if (!hooks.enabled) {
+        logHook(403, "rejected", "Входящие webhook-триггеры отключены.");
+        sendJson(res, 403, { success: false, error: "Входящие webhook-триггеры отключены." });
+        return;
+      }
+
+      const bodyResult = await readRequestBody(req, hooks.maxBodyBytes);
+      if (!bodyResult.ok) {
+        logHook(bodyResult.status, "rejected", bodyResult.error, declaredBytes);
+        sendJson(res, bodyResult.status, { success: false, error: bodyResult.error });
+        return;
+      }
+
+      const token = url.searchParams.get("token") ?? extractHookToken(req.headers);
+      const signature = extractHookSignature(req.headers);
+      const auth = authenticateHookRequest({
+        settings: hooks,
+        token,
+        signature,
+        timestamp,
+        body: bodyResult.body,
+      });
+      if (!auth.ok) {
+        logHook(auth.status, "rejected", auth.error, bodyResult.body.length);
+        sendJson(res, auth.status, { success: false, error: auth.error });
+        return;
+      }
+
+      let tasks: Awaited<ReturnType<DashboardDeps["getTasks"]>>;
+      try {
+        tasks = await deps.getTasks();
+      } catch (err: any) {
+        const message = err instanceof Error ? err.message : String(err);
+        logHook(500, "rejected", `Не удалось получить список задач: ${message}`, bodyResult.body.length);
+        sendJson(res, 500, { success: false, error: message });
+        return;
+      }
+      const key = taskName.toLowerCase();
+      const task = tasks.find((item) => String(item.name).toLowerCase() === key);
+      if (!task) {
+        logHook(404, "rejected", `Задача "${taskName}" не найдена.`, bodyResult.body.length);
+        sendJson(res, 404, { success: false, error: `Задача "${taskName}" не найдена.` });
+        return;
+      }
+
+      try {
+        const result = await deps.runTask(task.name);
+        const message = result?.alreadyRunning
+          ? `Задача "${task.name}" уже выполняется.`
+          : `Задача "${task.name}" запущена по webhook.`;
+        logHook(202, "accepted", undefined, bodyResult.body.length);
+        sendJson(res, 202, {
+          success: true,
+          task: task.name,
+          alreadyRunning: Boolean(result?.alreadyRunning),
+          message,
+        });
+      } catch (err: any) {
+        const message = err instanceof Error ? err.message : String(err);
+        logHook(500, "rejected", message, bodyResult.body.length);
+        sendJson(res, 500, { success: false, error: message });
       }
       return;
     }

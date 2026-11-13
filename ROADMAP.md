@@ -83,12 +83,16 @@
 3. Env-переменные на workspace (`.env`-файл или пары ключ-значение) с маскировкой секретов в логах.
 4. Тесты: `test-profiles.mjs`, `test-env.mjs`.
 
-## Спринт 22 — Интеграции и наблюдаемость
+## Спринт 22 — Интеграции и наблюдаемость ✅ Готово
 
-1. Входящий webhook-триггер: `POST /api/hooks/:task?token=…` (HMAC-подпись) — запуск из GitHub Actions/GitLab CI.
-2. Structured logs (JSONL) + `/api/logs` с фильтрами.
-3. Метрики в формате Prometheus (`/metrics`): запуски, длительность, ошибки, очередь.
-4. Экспорт истории в OpenTelemetry-совместимом виде (опционально).
+**По факту:** все четыре пункта реализованы, включая опциональный OTLP-экспорт (отчёт: `SPRINT22.md`).
+
+1. Входящий webhook-триггер: `POST /api/hooks/:task?token=…` с HMAC-SHA256 по сырому телу; заголовки `X-Scheduler-Signature`, `X-Hub-Signature-256` (GitHub), `X-Gitlab-Token`; опциональная проверка timestamp. Канал выключен по умолчанию, token/secret генерируются при включении.
+2. Structured logs: JSONL `<PLUGIN_DIR>/logs/runs.jsonl` с событиями `run.started` / `run.finished` / `hook.received`, ротация 10 МБ и `GET /api/logs` с фильтрами `task`, `status`, `event`, `since`, `until`, `limit` (+ `format=jsonl`).
+3. Prometheus: `GET /metrics` — запуски, ошибки, токены, стоимость, histogram длительности, глубина очереди и объём истории.
+4. OpenTelemetry: `GET /api/history/export?format=otlp` — OTLP/JSON со стабильными traceId/spanId на каждый запуск.
+
+Тесты: `test-integrations.mjs` (116 проверок) — в цепочке `npm test`.
 
 ## Правила спринта (не меняются)
 

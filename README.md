@@ -35,11 +35,11 @@ Want to see it without installing OpenCode? `node scripts/demo-dashboard.mjs` st
 | Reliability | lock-file no-overlap protection, timeouts with hard kill, retries with delay, crash recovery |
 | Quality | Quality Gate command, before/after hooks, per-task allowed/denied tool lists |
 | Orchestration | `dependsOn` DAG, `nextTaskOnSuccess` / `nextTaskOnError` chains, matrix fan-out (parallel/sequential, `continue`/`stop`, concurrency, per-workspace overrides, aggregator task) |
-| Triggers | cron, file change (chokidar), MCP events |
+| Triggers | cron, file change (chokidar), MCP events, incoming webhooks (`POST /api/hooks/:task` with HMAC) |
 | Multi-repo | workspaces with path validation, per-workspace runs, matrix over one parent task |
-| Observability | SQLite history (success / error / timeout / partial / running), metrics (duration, tokens, cost), per-task logs, local web dashboard with 14-day analytics, history retention (age and size limits) and CSV/JSON export |
+| Observability | SQLite history (success / error / timeout / partial / running), metrics (duration, tokens, cost), JSONL run logs with `/api/logs`, Prometheus `/metrics`, OTLP export, per-task logs, local web dashboard with 14-day analytics, history retention and CSV/JSON export |
 | Operations | dry-run preview, export/import JSON, templates, webhook notifications, settings |
-| Interfaces | OpenCode GUI panel, web dashboard, 12 agent tools, built-in agent skill |
+| Interfaces | OpenCode GUI panel, web dashboard, 22 agent tools, built-in agent skill |
 
 ## Install
 

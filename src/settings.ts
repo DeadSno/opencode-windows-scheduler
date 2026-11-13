@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { PLUGIN_DIR } from "./types.js";
@@ -101,6 +102,34 @@ export interface HistorySettings {
 }
 
 /**
+ * Входящие webhook-триггеры (Спринт 22).
+ *
+ * Запрос: `POST /api/hooks/<task>?token=<token>` с заголовком
+ * `X-Scheduler-Signature: sha256=<hmac>` (совместим с `X-Hub-Signature-256`).
+ * Токен подтверждает, кто вызывает хук, HMAC — целостность тела запроса.
+ */
+export interface HookSettings {
+  /** Включены ли входящие webhook-триггеры. */
+  enabled: boolean;
+  /** Общий токен в query-параметре `token` (сравнивается timing-safe). */
+  token: string;
+  /** Секрет для HMAC-SHA256 по сырому телу запроса. */
+  secret: string;
+  /** Требовать HMAC-подпись. Выключение допустимо только для локальных тестов. */
+  requireSignature: boolean;
+  /** Максимальный размер тела запроса в байтах (1 KiB..5 MiB). */
+  maxBodyBytes: number;
+  /** Допустимое расхождение `X-Scheduler-Timestamp` с текущим временем, секунды. 0 — не проверять. */
+  timestampToleranceSeconds: number;
+}
+
+/** Настройки внешних интеграций (Спринт 22). */
+export interface IntegrationSettings {
+  /** Входящие webhook-триггеры из CI/CD. */
+  hooks: HookSettings;
+}
+
+/**
  * Глобальные настройки плагина, которые меняются из GUI.
  * Хранятся в settings.json рядом с tasks.json / history.json.
  */
@@ -113,6 +142,8 @@ export interface SchedulerSettings {
   notifications: NotificationSettings;
   /** Ретеншн истории запусков. */
   history: HistorySettings;
+  /** Внешние интеграции: входящие webhook-триггеры. */
+  integrations: IntegrationSettings;
 }
 
 export const SETTINGS_FILE = path.join(PLUGIN_DIR, "settings.json");
@@ -126,6 +157,34 @@ export const DEFAULT_WEBHOOK_TIMEOUT_MS = 10_000;
 export const DEFAULT_WEBHOOK_RETRY_COUNT = 2;
 export const DEFAULT_WEBHOOK_RETRY_DELAY_MS = 1_000;
 export const DEFAULT_STUCK_AFTER_MINUTES = 60;
+
+/** Входящие хуки (Спринт 22): тело до 256 KiB, timestamp ±5 минут. */
+export const DEFAULT_HOOK_MAX_BODY_BYTES = 256 * 1024;
+export const DEFAULT_HOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
+const MAX_HOOK_BODY_BYTES = 5 * 1024 * 1024;
+const MAX_HOOK_CREDENTIAL_LENGTH = 512;
+
+/** Значения интеграций по умолчанию: хуки выключены, подпись обязательна. */
+export function defaultIntegrations(): IntegrationSettings {
+  return {
+    hooks: {
+      enabled: false,
+      token: "",
+      secret: "",
+      requireSignature: true,
+      maxBodyBytes: DEFAULT_HOOK_MAX_BODY_BYTES,
+      timestampToleranceSeconds: DEFAULT_HOOK_TIMESTAMP_TOLERANCE_SECONDS,
+    },
+  };
+}
+
+/** Генерирует криптостойкие учётные данные для входящего хука. */
+export function generateHookCredentials(): { token: string; secret: string } {
+  return {
+    token: crypto.randomBytes(24).toString("hex"),
+    secret: crypto.randomBytes(32).toString("hex"),
+  };
+}
 
 /** Ретеншн по умолчанию: 30 дней и не больше 5000 записей. */
 export function defaultHistorySettings(): HistorySettings {
@@ -372,10 +431,53 @@ function normalizeNotifications(
   };
 }
 
+/** Приводит настройки интеграций к безопасному виду. */
+function normalizeIntegrations(
+  value: unknown,
+  fallback: IntegrationSettings
+): IntegrationSettings {
+  const fallbackHooks = fallback.hooks ?? defaultIntegrations().hooks;
+  const raw = asRecord(value);
+  const rawHooks = asRecord(raw?.hooks);
+
+  const readCredential = (input: unknown, previous: string): string => {
+    if (typeof input !== "string") return previous;
+    return input.trim().slice(0, MAX_HOOK_CREDENTIAL_LENGTH);
+  };
+
+  return {
+    hooks: {
+      enabled:
+        typeof rawHooks?.enabled === "boolean"
+          ? rawHooks.enabled
+          : fallbackHooks.enabled,
+      token: readCredential(rawHooks?.token, fallbackHooks.token),
+      secret: readCredential(rawHooks?.secret, fallbackHooks.secret),
+      requireSignature:
+        typeof rawHooks?.requireSignature === "boolean"
+          ? rawHooks.requireSignature
+          : fallbackHooks.requireSignature,
+      maxBodyBytes: normalizeIntInRange(
+        rawHooks?.maxBodyBytes,
+        fallbackHooks.maxBodyBytes,
+        1_024,
+        MAX_HOOK_BODY_BYTES
+      ),
+      timestampToleranceSeconds: normalizeIntInRange(
+        rawHooks?.timestampToleranceSeconds,
+        fallbackHooks.timestampToleranceSeconds,
+        0,
+        86_400
+      ),
+    },
+  };
+}
+
 /** Читает настройки. Битый/отсутствующий файл — значения по умолчанию. */
 export async function loadSettings(): Promise<SchedulerSettings> {
   const fallbackNotifications = defaultNotifications();
   const fallbackHistory = defaultHistorySettings();
+  const fallbackIntegrations = defaultIntegrations();
   try {
     const raw = await fs.readFile(SETTINGS_FILE, "utf8");
     const parsed = JSON.parse(raw) as Partial<SchedulerSettings> | null;
@@ -393,6 +495,10 @@ export async function loadSettings(): Promise<SchedulerSettings> {
         fallbackNotifications
       ),
       history: normalizeHistorySettings(parsed?.history, fallbackHistory),
+      integrations: normalizeIntegrations(
+        parsed?.integrations,
+        fallbackIntegrations
+      ),
     };
   } catch {
     return {
@@ -400,6 +506,7 @@ export async function loadSettings(): Promise<SchedulerSettings> {
       winterMode: DEFAULT_WINTER_MODE,
       notifications: fallbackNotifications,
       history: fallbackHistory,
+      integrations: fallbackIntegrations,
     };
   }
 }
@@ -426,7 +533,22 @@ export async function saveSettings(
       patch.history !== undefined
         ? normalizeHistorySettings(patch.history, current.history)
         : current.history,
+    integrations:
+      patch.integrations !== undefined
+        ? normalizeIntegrations(patch.integrations, current.integrations)
+        : current.integrations,
   };
+
+  // Удобство: при включении хуков без явных учётных данных генерируем их,
+  // чтобы функция сразу работала, а секреты не приходилось придумывать вручную.
+  if (next.integrations.hooks.enabled) {
+    if (!next.integrations.hooks.token || !next.integrations.hooks.secret) {
+      const generated = generateHookCredentials();
+      if (!next.integrations.hooks.token) next.integrations.hooks.token = generated.token;
+      if (!next.integrations.hooks.secret) next.integrations.hooks.secret = generated.secret;
+    }
+  }
+
   await fs.mkdir(PLUGIN_DIR, { recursive: true });
   await fs.writeFile(SETTINGS_FILE, JSON.stringify(next, null, 2), "utf8");
   return next;

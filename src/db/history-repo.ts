@@ -1,5 +1,6 @@
 import { getDb, withTransaction } from "./index.js";
 import { incrementMetricsUnsafe } from "./metrics-repo.js";
+import { appendStructuredLog } from "../core/structured-log.js";
 import type { TaskStatus } from "../history.js";
 
 /**
@@ -117,7 +118,7 @@ export function startRun(
   allowedTools?: string[] | null,
   deniedTools?: string[] | null
 ): number {
-  return insertHistory({
+  const id = insertHistory({
     taskName,
     status: "running",
     startedAt,
@@ -126,6 +127,16 @@ export function startRun(
     allowedTools,
     deniedTools,
   });
+  appendStructuredLog({
+    event: "run.started",
+    runId: id,
+    task: taskName,
+    status: "running",
+    startedAt,
+    workspaceId: workspaceId ?? null,
+    source: "startRun",
+  });
+  return id;
 }
 
 /**
@@ -144,7 +155,11 @@ export function finishRun(
   preFlightStatus?: "success" | "error" | "skipped",
   postFlightStatus?: "success" | "error" | "skipped"
 ): boolean {
-  return withTransaction(() => {
+  const safeDuration = Number.isFinite(durationMs) ? Math.max(0, Math.floor(durationMs)) : 0;
+  const finishedAt = new Date().toISOString();
+  let completed: { taskName: string; startedAt: string } | null = null;
+
+  const ok = withTransaction(() => {
     const instance = getDb();
     const row = instance
       .prepare("SELECT finished_at FROM history WHERE id = ?")
@@ -161,8 +176,8 @@ export function finishRun(
       )
       .run(
         status,
-        new Date().toISOString(),
-        Number.isFinite(durationMs) ? Math.max(0, Math.floor(durationMs)) : 0,
+        finishedAt,
+        safeDuration,
         error ?? null,
         nextTask ?? null,
         tokens ?? null,
@@ -174,11 +189,36 @@ export function finishRun(
       );
 
     const taskRow = instance
-      .prepare("SELECT task_name FROM history WHERE id = ?")
+      .prepare("SELECT task_name, started_at FROM history WHERE id = ?")
       .get(id) as any;
     incrementMetricsUnsafe(String(taskRow.task_name), status, tokens, costUsd);
+    completed = {
+      taskName: String(taskRow.task_name),
+      startedAt: String(taskRow.started_at),
+    };
     return true;
   });
+
+  if (ok && completed) {
+    const done = completed as { taskName: string; startedAt: string };
+    appendStructuredLog({
+      event: "run.finished",
+      runId: id,
+      task: done.taskName,
+      status,
+      startedAt: done.startedAt,
+      finishedAt,
+      durationMs: safeDuration,
+      error: error ?? null,
+      nextTask: nextTask ?? null,
+      tokens,
+      costUsd,
+      model,
+      preFlightStatus,
+      postFlightStatus,
+    });
+  }
+  return ok;
 }
 
 /**
@@ -202,7 +242,8 @@ export function recordRun(
   allowedTools?: string[] | null,
   deniedTools?: string[] | null
 ): number {
-  return withTransaction(() => {
+  const safeDuration = Math.max(0, Math.floor(Number(durationMs) || 0));
+  const id = withTransaction(() => {
     const result = getDb()
       .prepare(INSERT_SQL)
       .run(
@@ -210,7 +251,7 @@ export function recordRun(
         status,
         startedAt,
         finishedAt,
-        Math.max(0, Math.floor(Number(durationMs) || 0)),
+        safeDuration,
         error ?? null,
         tokens ?? null,
         costUsd ?? null,
@@ -225,6 +266,25 @@ export function recordRun(
     incrementMetricsUnsafe(taskName, status, tokens, costUsd);
     return lastId(result);
   });
+
+  appendStructuredLog({
+    event: "run.finished",
+    runId: id,
+    task: taskName,
+    status,
+    startedAt,
+    finishedAt,
+    durationMs: safeDuration,
+    error: error ?? null,
+    nextTask: nextTask ?? null,
+    tokens,
+    costUsd,
+    model,
+    workspaceId: workspaceId ?? null,
+    preFlightStatus,
+    postFlightStatus,
+  });
+  return id;
 }
 
 /** История запусков (новые сверху). Без taskName — по всем задачам. */

@@ -29,7 +29,11 @@ import {
 import { SchedulerRpc } from "./rpc.js";
 import { loadHistory, loadMetrics } from "./history.js";
 import { loadSettings, saveSettings } from "./settings.js";
-import type { HistorySettings, NotificationSettings } from "./settings.js";
+import type {
+  HistorySettings,
+  IntegrationSettings,
+  NotificationSettings,
+} from "./settings.js";
 import { runHistoryRetention, maybeRunHistoryRetention } from "./core/retention.js";
 import { buildAnalytics } from "./core/analytics.js";
 import { getHistory, listRunningRecords } from "./db/history-repo.js";
@@ -561,6 +565,12 @@ export const manageSettingsSchema = z.object({
     })
     .optional()
     .describe("History retention policy."),
+  integrations: z
+    .any()
+    .optional()
+    .describe(
+      "Integration settings patch (hooks: enabled, token, secret, requireSignature, maxBodyBytes, timestampToleranceSeconds)."
+    ),
 });
 
 /** manage_templates — пользовательские шаблоны задач. */
@@ -1727,12 +1737,14 @@ const manageSettingsExecute = wrapExecute<SettingsArgs>(async (args) => {
     args.maxConcurrent === undefined &&
     args.winterMode === undefined &&
     args.notifications === undefined &&
-    args.history === undefined
+    args.history === undefined &&
+    args.integrations === undefined
   ) {
     return {
       content: JSON.stringify({
         success: false,
-        error: "Для action=update передайте хотя бы одно поле: maxConcurrent, winterMode, notifications или history.",
+        error:
+          "Для action=update передайте хотя бы одно поле: maxConcurrent, winterMode, notifications, history или integrations.",
         settings: current,
       }),
     };
@@ -1743,6 +1755,7 @@ const manageSettingsExecute = wrapExecute<SettingsArgs>(async (args) => {
     winterMode: args.winterMode,
     notifications: args.notifications as NotificationSettings | undefined,
     history: args.history as HistorySettings | undefined,
+    integrations: args.integrations as IntegrationSettings | undefined,
   });
   return { content: JSON.stringify({ success: true, settings }) };
 });
@@ -2997,18 +3010,20 @@ export default Plugin.define({
         return await loadSettings();
       },
       save_settings: async (input: unknown) => {
-        const { maxConcurrent, winterMode, notifications, history } = input as {
+        const { maxConcurrent, winterMode, notifications, history, integrations } = input as {
           maxConcurrent?: number;
           winterMode?: boolean;
           notifications?: NotificationSettings;
           history?: HistorySettings;
+          integrations?: IntegrationSettings;
         };
         const current = await loadSettings();
         if (
           maxConcurrent === undefined &&
           winterMode === undefined &&
           notifications === undefined &&
-          history === undefined
+          history === undefined &&
+          integrations === undefined
         ) {
           return {
             success: false,
@@ -3016,6 +3031,7 @@ export default Plugin.define({
             winterMode: current.winterMode,
             notifications: current.notifications,
             history: current.history,
+            integrations: current.integrations,
           };
         }
         const settings = await saveSettings({
@@ -3023,6 +3039,7 @@ export default Plugin.define({
           winterMode,
           notifications,
           history,
+          integrations,
         });
         return {
           success: true,
@@ -3030,6 +3047,7 @@ export default Plugin.define({
           winterMode: settings.winterMode,
           notifications: settings.notifications,
           history: settings.history,
+          integrations: settings.integrations,
         };
       },
       test_notification: async () => {

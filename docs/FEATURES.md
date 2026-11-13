@@ -266,7 +266,45 @@ per-day buckets (UTC), success rate, token-based cost estimate, top tasks by cos
 matrix and model breakdowns — is available through `get_analytics` /
 `GET /api/analytics` and the dashboard's «📊 Аналитика за период» block. History is
 pruned automatically (age and size limits, see Settings) and can be exported as
-CSV/JSON (`GET /api/history/export`).
+CSV/JSON (`GET /api/history/export`), or as OTLP/JSON for OpenTelemetry
+(`GET /api/history/export?format=otlp`).
+
+### Prometheus
+
+`GET /metrics` exposes the Prometheus text format (0.0.4): `opencode_scheduler_info`,
+`up`, `queue_depth`, `history_records`, `runs_total{task,status}`,
+`errors_total{task}`, `tokens_total{task}`, `cost_usd_total{task}` and the
+`run_duration_seconds` histogram (1 s … 3600 s + `+Inf`). Values are read from
+SQLite at scrape time, so no extra agent or exporter process is required.
+
+### Structured logs
+
+Every run start/finish and every webhook decision is appended to
+`<PLUGIN_DIR>/logs/runs.jsonl` (one JSON object per line, 10 MiB rotation to
+`runs.jsonl.1`). `GET /api/logs` returns newest-first records and supports `task`,
+`status`, `event`, `since`, `until`, `limit` and `format=jsonl`. The database
+`history` table remains the source of truth for aggregates; JSONL is for log
+shipping and debugging and never blocks a run if writing fails.
+
+### Incoming webhooks
+
+`POST /api/hooks/:task?token=…` starts a task from GitHub Actions, GitLab CI or any
+external system. The request must carry an HMAC-SHA256 of the raw body in
+`X-Scheduler-Signature: sha256=<hex>` (GitHub's `X-Hub-Signature-256` and a bare
+hex digest are also accepted). The token may instead come from `X-Scheduler-Token`
+or `X-Gitlab-Token`. An optional `X-Scheduler-Timestamp` is checked against
+`timestampToleranceSeconds`. Hooks are disabled by default; enabling them with empty
+credentials generates a token and secret automatically. Errors: 401 (bad
+token/signature/timestamp), 403 (channel disabled or credentials missing), 404
+(unknown task), 413 (body over `maxBodyBytes`). The dashboard still binds to
+localhost only, so external CI needs a tunnel or self-hosted runner.
+
+### OpenTelemetry
+
+History can be exported as OTLP/JSON: one span per run, deterministic 32-hex
+`traceId` and 16-hex `spanId`, nanosecond timestamps, task/status/duration/tokens/
+cost/model/error attributes and OK/ERROR status. The output can be posted to an
+OpenTelemetry Collector or inspected directly.
 
 ### Logs
 
