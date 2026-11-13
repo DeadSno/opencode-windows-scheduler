@@ -9,6 +9,7 @@ import {
 } from "./db/tasks-repo.js";
 import { normalizeOneShotRunAt } from "./core/one-shot.js";
 import { isValidIanaTimeZone, validateLaunchWindow } from "./core/schedule-v2.js";
+import { isValidSessionId } from "./core/session.js";
 
 /** Триггер задачи по событию из MCP-шины. */
 export interface McpEventTrigger {
@@ -120,6 +121,19 @@ export interface TaskDefinition {
   triggerType?: "cron" | "file" | "mcp-event" | "once";
   /** Абсолютное время однократного запуска (ISO-8601, triggerType "once"). */
   runAt?: string;
+  /**
+   * Режим сессии OpenCode для запусков задачи (Спринт 24):
+   * "new" (по умолчанию — свежая сессия на каждый запуск),
+   * "reuse" — переиспользовать сохранённую сессию (`sessionId`),
+   * "last" — продолжать последнюю сессию рабочего каталога (`--continue`).
+   */
+  session?: "new" | "reuse" | "last";
+  /** Идентификатор переиспользуемой сессии (генерируется плагином для режима "reuse"). */
+  sessionId?: string;
+  /** Сколько запусков переживает сессия до ротации (удаление и чистый старт). 0/undefined — без ограничения. */
+  sessionMaxRuns?: number;
+  /** Внутренний счётчик запусков текущей сессии (не экспортируется). */
+  sessionRunCount?: number;
   /** Путь к файлу/папке, изменения которого запускают задачу (для triggerType === "file"). */
   watchPath?: string;
   /** Параметры MCP-события (для triggerType === "mcp-event"). */
@@ -289,6 +303,16 @@ export async function buildExportJson(
             ...(definition.runAt ? { runAt: definition.runAt } : {}),
           }
         : {}),
+      // Спринт 24: сессии. sessionId экспортируется только для reuse; счётчик не экспортируем.
+      ...(definition?.session
+        ? { session: definition.session }
+        : {}),
+      ...(definition?.session === "reuse" && definition.sessionId
+        ? { sessionId: definition.sessionId }
+        : {}),
+      ...(definition?.sessionMaxRuns !== undefined
+        ? { sessionMaxRuns: definition.sessionMaxRuns }
+        : {}),
       ...(definition?.watchPath ? { watchPath: definition.watchPath } : {}),
       ...(definition?.timezone ? { timezone: definition.timezone } : {}),
       ...(definition?.notBefore ? { notBefore: definition.notBefore } : {}),
@@ -452,6 +476,45 @@ export function parseImportJson(raw: string): ParsedImport {
         return;
       }
       runAt = normalized.runAt;
+    }
+
+    // Спринт 24: режим сессии. Отсутствие полей — "new" (совместимость со старыми экспортами).
+    let session: "new" | "reuse" | "last" = "new";
+    if (source.session !== undefined) {
+      if (
+        source.session === "new" ||
+        source.session === "reuse" ||
+        source.session === "last"
+      ) {
+        session = source.session;
+      } else {
+        errors.push(
+          `Запись ${position}${name ? ` (${name})` : ""}: неизвестный session «${String(source.session)}» (ожидается new, reuse или last).`
+        );
+        return;
+      }
+    }
+    const sessionId =
+      typeof source.sessionId === "string" && source.sessionId.trim()
+        ? source.sessionId.trim()
+        : undefined;
+    if (sessionId && !isValidSessionId(sessionId)) {
+      errors.push(
+        `Запись ${position}${name ? ` (${name})` : ""}: некорректный sessionId «${sessionId}».`
+      );
+      return;
+    }
+    let sessionMaxRuns: number | undefined;
+    if (source.sessionMaxRuns !== undefined) {
+      const raw = source.sessionMaxRuns;
+      if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
+        sessionMaxRuns = Math.floor(raw);
+      } else {
+        errors.push(
+          `Запись ${position}${name ? ` (${name})` : ""}: sessionMaxRuns должен быть целым числом ≥ 1.`
+        );
+        return;
+      }
     }
 
     const timeoutSeconds =
@@ -711,6 +774,9 @@ export function parseImportJson(raw: string): ParsedImport {
       ...(dependsOn !== undefined ? { dependsOn } : {}),
       ...(triggerType === "cron" ? {} : { triggerType }),
       ...(runAt ? { runAt } : {}),
+      ...(session !== "new" ? { session } : {}),
+      ...(session === "reuse" && sessionId ? { sessionId } : {}),
+      ...(sessionMaxRuns !== undefined ? { sessionMaxRuns } : {}),
       ...(watchPath ? { watchPath } : {}),
       ...(timezone !== undefined ? { timezone } : {}),
       ...(notBefore !== undefined ? { notBefore } : {}),

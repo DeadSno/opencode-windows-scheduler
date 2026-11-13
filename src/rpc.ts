@@ -85,6 +85,12 @@ const TaskItem = {
     triggerType: { type: ["string", "null"] },
     /** Время разового запуска (triggerType === "once"), ISO-8601; null для остальных. */
     runAt: { type: ["string", "null"] },
+    /** Режим сессии OpenCode (Спринт 24): "new" (по умолчанию), "reuse" (--session), "last" (--continue). */
+    session: { type: ["string", "null"] },
+    /** Идентификатор переиспользуемой сессии (только для session === "reuse"); null для остальных. */
+    sessionId: { type: ["string", "null"] },
+    /** Сколько запусков переживает reuse-сессия до ротации; null — без ограничения. */
+    sessionMaxRuns: { type: ["number", "null"] },
     /** Параметры MCP-события (null — не MCP-триггер). */
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */
@@ -180,6 +186,10 @@ const CreateTaskInput = {
     runAt: { type: "string" },
     /** Отложенный разовый запуск через N секунд (triggerType === "once"). Взаимоисключает runAt. */
     delaySeconds: { type: "number" },
+    /** Режим сессии OpenCode (Спринт 24): "new" (по умолчанию), "reuse" (--session <id>), "last" (--continue). sessionId генерируется плагином. */
+    session: { type: "string" },
+    /** Сколько запусков переживает reuse-сессия до ротации (удаление и чистый старт). 0/не задано — без ограничения. */
+    sessionMaxRuns: { type: "number" },
     /** Параметры MCP-события. */
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */
@@ -719,6 +729,10 @@ const UpdateTaskInput = {
     runAt: { type: "string" },
     /** Отложенный разовый запуск через N секунд (triggerType === "once"). Взаимоисключает runAt. */
     delaySeconds: { type: "number" },
+    /** Режим сессии OpenCode (Спринт 24): "new" (по умолчанию), "reuse" (--session <id>), "last" (--continue). sessionId генерируется плагином. */
+    session: { type: "string" },
+    /** Сколько запусков переживает reuse-сессия до ротации (удаление и чистый старт). 0/не задано — без ограничения. */
+    sessionMaxRuns: { type: "number" },
     /** Параметры MCP-события. */
     mcpEvent: McpEventSchema,
     /** Путь к файлу/папке для файлового триггера. */

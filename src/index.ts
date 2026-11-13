@@ -12,6 +12,11 @@ import {
   buildLaunchdOneShotCleanup,
   normalizeOneShotRunAt,
 } from "./core/one-shot.js";
+import {
+  generateSessionId,
+  normalizeSessionMode,
+  type SessionMode,
+} from "./core/session.js";
 import { ensureWrapper, writePromptFile, writeWrapperCmd, lockFilePath, requestImmediateRun } from "./core/ps-wrapper.js";
 import { getSchedulerBackend } from "./core/scheduler/index.js";
 import { SCHEDULER_SKILL_ID, loadSchedulerSkill } from "./skill.js";
@@ -212,6 +217,21 @@ export const scheduleTaskSchema = z.object({
     .describe(
       "One-shot delay in seconds from now. Requires triggerType=once. Convenient alternative to runAt."
     ),
+  session: z
+    .enum(["new", "reuse", "last"])
+    .optional()
+    .describe(
+      "OpenCode session mode for the task: new (default, fresh session per run), reuse (keep a persistent session stored on the task — sessionId is auto-generated), last (continue the latest session via --continue)."
+    ),
+  sessionMaxRuns: z
+    .number()
+    .int()
+    .min(1)
+    .max(10000)
+    .optional()
+    .describe(
+      "Only for session=reuse: how many runs the reused session survives before it is deleted and a fresh one is created. Unset/0 — no limit."
+    ),
   timezone: z
     .string()
     .optional()
@@ -401,6 +421,21 @@ export const updateTaskSchema = z.object({
     .optional()
     .describe(
       "New one-shot delay in seconds from now. Requires triggerType=once."
+    ),
+  session: z
+    .enum(["new", "reuse", "last"])
+    .optional()
+    .describe(
+      "OpenCode session mode for the task: new (fresh session per run), reuse (keep a persistent session stored on the task — sessionId is auto-generated), last (continue the latest session via --continue)."
+    ),
+  sessionMaxRuns: z
+    .number()
+    .int()
+    .min(1)
+    .max(10000)
+    .optional()
+    .describe(
+      "Only for session=reuse: how many runs the reused session survives before it is deleted and a fresh one is created. Unset/0 — no limit."
     ),
   timezone: z
     .string()
@@ -813,6 +848,8 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
     timezone,
     notBefore,
     notAfter,
+    session,
+    sessionMaxRuns,
   } = args;
 
   let effectiveRunAt: string | undefined;
@@ -825,6 +862,13 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
     }
     effectiveRunAt = normalized.runAt;
   }
+
+  // Спринт 24: режим сессии. По умолчанию "new" (старое поведение).
+  // sessionId пользователя никогда не принимаем — он создаётся автоматически.
+  const effectiveSession: "new" | "reuse" | "last" =
+    normalizeSessionMode(session) ?? "new";
+  const effectiveSessionId =
+    effectiveSession === "reuse" ? generateSessionId() : undefined;
 
   try {
     await schedulerCreateTask(
@@ -856,7 +900,10 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
       notBefore,
       notAfter,
       undefined,
-      effectiveRunAt
+      effectiveRunAt,
+      effectiveSession,
+      effectiveSessionId,
+      sessionMaxRuns
     );
   } catch (err: any) {
     return {
@@ -894,6 +941,9 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
         nextTaskOnError: nextTaskOnError?.trim() || null,
         triggerType: triggerType ?? "cron",
         runAt: effectiveRunAt ?? null,
+        session: effectiveSession,
+        sessionId: effectiveSessionId ?? null,
+        sessionMaxRuns: sessionMaxRuns ?? null,
         timezone: timezone?.trim() || null,
         notBefore: notBefore?.trim() || null,
         notAfter: notAfter?.trim() || null,
@@ -1279,6 +1329,40 @@ async function updateTaskFromInput(
     runAt = normalized.runAt;
   }
 
+  // Спринт 24: режим сессии. Без новых session/sessionMaxRuns сохраняем прежние.
+  // sessionId пользователя не принимаем — генерируем сами при переходе на reuse.
+  let session: "new" | "reuse" | "last" = "new";
+  if (input.session !== undefined) {
+    const normalizedSession = normalizeSessionMode(input.session);
+    if (!normalizedSession) {
+      return {
+        success: false,
+        message: `Задача "${name}": неизвестный режим сессии "${String(input.session)}".`,
+      };
+    }
+    session = normalizedSession;
+  } else if (previous.session) {
+    session = previous.session;
+  }
+  const sessionMaxRuns =
+    input.sessionMaxRuns !== undefined ? input.sessionMaxRuns : previous.sessionMaxRuns;
+  if (
+    sessionMaxRuns !== undefined &&
+    (!Number.isInteger(sessionMaxRuns) || sessionMaxRuns < 1)
+  ) {
+    return {
+      success: false,
+      message: `Задача "${name}": sessionMaxRuns должен быть целым числом ≥ 1.`,
+    };
+  }
+  let sessionId = previous.sessionId;
+  if (session === "reuse" && !sessionId) {
+    sessionId = generateSessionId();
+  }
+  if (session !== "reuse") {
+    sessionId = undefined;
+  }
+
   const matrixWas = previous.matrix;
   const matrixNext =
     input.matrix === undefined ? matrixWas : input.matrix ?? undefined;
@@ -1325,7 +1409,10 @@ async function updateTaskFromInput(
       notBefore,
       notAfter,
       previous.pausedUntil,
-      runAt
+      runAt,
+      session,
+      sessionId,
+      sessionMaxRuns
     );
 
     // Матрица отключена при обновлении — убираем клонов и агрегатор.
@@ -2608,6 +2695,8 @@ export default Plugin.define({
           notAfter,
           runAt,
           delaySeconds,
+          session,
+          sessionMaxRuns,
         } = input as {
           name: string;
           schedule?: string;
@@ -2635,6 +2724,8 @@ export default Plugin.define({
           notAfter?: string;
           runAt?: string;
           delaySeconds?: number;
+          session?: "new" | "reuse" | "last";
+          sessionMaxRuns?: number;
         };
         let effectiveRunAt: string | undefined;
         if (triggerType === "once") {
@@ -2644,6 +2735,22 @@ export default Plugin.define({
           }
           effectiveRunAt = normalized.runAt;
         }
+        let effectiveSession: "new" | "reuse" | "last" = "new";
+        if (session !== undefined) {
+          const normalizedSession = normalizeSessionMode(session);
+          if (!normalizedSession) {
+            return { success: false, message: `Задача "${name}": неизвестный режим сессии "${String(session)}".` };
+          }
+          effectiveSession = normalizedSession;
+        }
+        if (
+          sessionMaxRuns !== undefined &&
+          (!Number.isInteger(sessionMaxRuns) || sessionMaxRuns < 1)
+        ) {
+          return { success: false, message: `Задача "${name}": sessionMaxRuns должен быть целым числом ≥ 1.` };
+        }
+        const effectiveSessionId =
+          effectiveSession === "reuse" ? generateSessionId() : undefined;
         try {
           await schedulerCreateTask(
             name,
@@ -2674,7 +2781,10 @@ export default Plugin.define({
             notBefore,
             notAfter,
             undefined,
-            effectiveRunAt
+            effectiveRunAt,
+            effectiveSession,
+            effectiveSessionId,
+            sessionMaxRuns
           );
           return { success: true, message: `Задача "${name}" успешно создана.` };
         } catch (err: any) {
@@ -3485,7 +3595,13 @@ async function schedulerCreateTask(
   /** Пауза до момента ISO; после него задача возобновляется автоматически. */
   pausedUntil?: string,
   /** Абсолютное время однократного запуска (ISO, только triggerType=once). */
-  runAt?: string
+  runAt?: string,
+  /** Режим сессии OpenCode (Спринт 24): new (по умолчанию), reuse, last. */
+  session?: "new" | "reuse" | "last",
+  /** ID сессии для reuse (генерируется автоматически; пользователь не задаёт). */
+  sessionId?: string,
+  /** Сколько запусков переживает reuse-сессия до ротации (0/undefined — без ограничения). */
+  sessionMaxRuns?: number
 ): Promise<void> {
   const normalizedModel = model?.trim() || undefined;
   const normalizedPriority = normalizePriority(priority);
@@ -3513,6 +3629,20 @@ async function schedulerCreateTask(
       throw new Error(`Задача "${name}": ${normalized.error}`);
     }
     effectiveRunAt = normalized.runAt;
+  }
+  // Спринт 24: режим сессии. sessionId генерируется автоматически для reuse;
+  // значение пользователя никогда не принимаем.
+  let effectiveSession: "new" | "reuse" | "last" = "new";
+  let effectiveSessionId: string | undefined;
+  if (session !== undefined) {
+    const normalizedSession = normalizeSessionMode(session);
+    if (!normalizedSession) {
+      throw new Error(`Задача "${name}": неизвестный режим сессии "${String(session)}".`);
+    }
+    effectiveSession = normalizedSession;
+  }
+  if (effectiveSession === "reuse") {
+    effectiveSessionId = sessionId?.trim() || generateSessionId();
   }
   // Role-scoped: нормализуем списки инструментов (trim, дедуп без регистра).
   // Пустой allowedTools — осознанная блокировка: «белый список из нуля
@@ -3701,7 +3831,9 @@ async function schedulerCreateTask(
         normalizedAllowedTools,
         normalizedDeniedTools,
         wrapperGate,
-        taskEnvFile
+        taskEnvFile,
+        effectiveSession,
+        effectiveSessionId
       );
     } else {
       wrapperPath = await writeBashWrapper({
@@ -3722,6 +3854,8 @@ async function schedulerCreateTask(
         deniedTools: normalizedDeniedTools,
         scheduleGate: wrapperGate,
         envFile: taskEnvFile,
+        sessionMode: effectiveSession,
+        sessionId: effectiveSessionId,
         ...(effectiveTriggerType === "once" && scheduler.platform === "darwin"
           ? { oneShotCleanupCommand: buildLaunchdOneShotCleanup(sanitized) }
           : {}),
@@ -3773,6 +3907,11 @@ async function schedulerCreateTask(
     nextTaskOnError,
     triggerType: effectiveTriggerType,
     runAt: effectiveRunAt,
+    // Спринт 24: сессия. sessionRunCount не экспортируется (internal).
+    session: effectiveSession,
+    sessionId: effectiveSessionId,
+    sessionMaxRuns,
+    sessionRunCount: 0,
     watchPath: normalizedMatrix ? undefined : watchPath,
     timezone: normalizedTz,
     notBefore: normalizedNotBefore,
@@ -4048,6 +4187,10 @@ async function collectTasksView() {
         ? def?.runAt ?? (t.nextRunTime ? String(t.nextRunTime) : null)
         : t.nextRunTime ? String(t.nextRunTime) : null,
       runAt: def?.runAt ?? null,
+      session: def?.session ?? "new",
+      sessionId: def?.sessionId ?? null,
+      sessionMaxRuns: def?.sessionMaxRuns ?? null,
+      sessionRunCount: def?.sessionRunCount ?? 0,
       model: def?.model ?? null,
       priority: def?.priority ?? 5,
       beforeScript: def?.beforeScript ?? null,

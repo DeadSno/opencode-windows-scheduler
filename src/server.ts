@@ -1770,6 +1770,13 @@ function renderPage(): string {
 
   /** Строка таблицы задач; клоны матрицы помечаются ↳ matrix <parent>. */
   function taskRow(t, isClone, cloneCount, expanded) {
+    var sessionBadge = t.session === 'reuse' || t.session === 'last'
+      ? '<span title="' + (t.session === 'reuse'
+          ? 'Переиспользуемая сессия OpenCode' + (t.sessionId ? ': ' + t.sessionId : '')
+          : 'Продолжение последней сессии OpenCode (--continue)') +
+        '" style="margin-left:6px;padding:1px 6px;border-radius:999px;border:1px solid #30d158;color:#30d158;font-size:11px">' +
+        (t.session === 'reuse' ? '⟳ сессия' : '↪ продолжение') + '</span>'
+      : '';
     var cron = t.triggerType === 'file'
       ? '👁️ файл: ' + (t.watchPath || '')
       : t.triggerType === 'mcp-event'
@@ -1804,7 +1811,7 @@ function renderPage(): string {
     return '<tr' + (isClone ? ' class="clone-row"' : '') + '>' +
       '<td class="name" title="' + esc(t.name) + '">' + nameHtml + '</td>' +
       '<td>' + badge(t.status) + matrixSummaryHtml(t) + '</td>' +
-      '<td class="cron">' + esc(cron) + '</td>' +
+      '<td class="cron">' + esc(cron) + sessionBadge + '</td>' +
       '<td>' + workspaceHtml(t) + '</td>' +
       '<td>' + modelHtml(t) + '</td>' +
       '<td>' + priorityHtml(t) + '</td>' +

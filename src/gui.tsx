@@ -90,6 +90,10 @@ interface Job {
   triggerType?: "cron" | "file" | "mcp-event" | "once"
   /** Для triggerType "once" — время одного запуска (ISO-8601). */
   runAt?: string | null
+  /** OpenCode-сессия: new — каждый запуск новая, reuse — переиспользовать, last — --continue. */
+  session?: "new" | "reuse" | "last" | null
+  /** Сколько запусков переживает reuse-сессия до удаления; пусто — без лимита. */
+  sessionMaxRuns?: number | null
   /** Параметры MCP-события. */
   mcpEvent?: { server: string; event: string; filter?: string }
   watchPath?: string
@@ -623,6 +627,9 @@ export default Plugin.define({
     // Разовое время: ISO-8601 или задержка в секундах от нажатия "Запланировать".
     const [runAt, setRunAt] = createSignal("")
     const [delaySeconds, setDelaySeconds] = createSignal("")
+    // Сессия OpenCode (Спринт 24): new / reuse (сохраняем sessionId на задаче) / last (--continue).
+    const [session, setSession] = createSignal<"new" | "reuse" | "last">("new")
+    const [sessionMaxRuns, setSessionMaxRuns] = createSignal("")
     // Часовой пояс и окно запуска (Спринт 19). Пусто = системный пояс / без окна.
     const [timezone, setTimezone] = createSignal("")
     const [notBefore, setNotBefore] = createSignal("")
@@ -1239,6 +1246,8 @@ export default Plugin.define({
           afterScript: t.afterScript ?? undefined,
           triggerType: (t.triggerType ?? "cron") as "cron" | "file" | "mcp-event" | "once",
           runAt: t.runAt ?? undefined,
+          session: (t as any).session ?? undefined,
+          sessionMaxRuns: (t as any).sessionMaxRuns ?? undefined,
           mcpEvent: t.mcpEvent ?? undefined,
           watchPath: t.watchPath ?? undefined,
           timezone: t.timezone ?? undefined,
@@ -1327,6 +1336,10 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          session: session(),
+          ...(session() === "reuse" && (sessionMaxRuns() || "").trim()
+            ? { sessionMaxRuns: Number((sessionMaxRuns() || "").trim()) }
+            : {}),
           ...(triggerType() === "once"
             ? {
                 runAt: (runAt() || "").trim() || undefined,
@@ -1379,6 +1392,8 @@ export default Plugin.define({
         setWatchPath("")
         setRunAt("")
         setDelaySeconds("")
+        setSession("new")
+        setSessionMaxRuns("")
     setTimezone("")
     setNotBefore("")
     setNotAfter("")
@@ -1589,6 +1604,10 @@ export default Plugin.define({
           afterScript: (afterScript() || "").trim(),
           dependsOn: dependsOn(),
           triggerType: triggerType(),
+          session: session(),
+          ...(session() === "reuse" && (sessionMaxRuns() || "").trim()
+            ? { sessionMaxRuns: Number((sessionMaxRuns() || "").trim()) }
+            : {}),
           ...(triggerType() === "once"
             ? {
                 runAt: (runAt() || "").trim() || undefined,
@@ -1634,6 +1653,8 @@ export default Plugin.define({
         setWatchPath("")
         setRunAt("")
         setDelaySeconds("")
+        setSession("new")
+        setSessionMaxRuns("")
     setTimezone("")
     setNotBefore("")
     setNotAfter("")
@@ -1676,6 +1697,10 @@ export default Plugin.define({
       setWatchPath(job.watchPath ?? "")
       setRunAt(job.runAt ?? "")
       setDelaySeconds("")
+      setSession(job.session === "reuse" || job.session === "last" ? job.session : "new")
+      setSessionMaxRuns(
+        typeof job.sessionMaxRuns === "number" ? String(job.sessionMaxRuns) : ""
+      )
       setTimezone(job.timezone ?? "")
       setNotBefore(job.notBefore ?? "")
       setNotAfter(job.notAfter ?? "")
@@ -1847,6 +1872,14 @@ export default Plugin.define({
                   title={`MCP-событие: ${job.mcpEvent?.event ?? "—"}${job.mcpEvent?.filter ? ` (фильтр: ${job.mcpEvent.filter})` : ""}`}
                   style="font-size:13px;flex-shrink:0;cursor:help"
                 >📡</span>
+              )}
+              {job.session && job.session !== "new" && (
+                <span
+                  title={job.session === "reuse"
+                    ? `Переиспользуемая сессия OpenCode${job.sessionId ? `: ${job.sessionId}` : ""}`
+                    : "Продолжение последней сессии OpenCode (--continue)"}
+                  style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #30d158;color:#30d158;background:rgba(48,209,88,0.12)"
+                >{job.session === "reuse" ? "⟳ сессия" : "↪ продолжение"}</span>
               )}
               {job.model && (
                 <span title={`Модель LLM: ${job.model}`} style="font-size:12px;flex-shrink:0;cursor:help;color:#c084fc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">🧠 {job.model}</span>
@@ -3108,6 +3141,56 @@ export default Plugin.define({
                 </div>
               )}
 
+              <div style="display:block;width:100%;margin-bottom:12px">
+                <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Сессия OpenCode</label>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                    <input
+                      type="radio"
+                      name="sessionMode"
+                      checked={session() === "new"}
+                      onChange={() => setSession("new")}
+                      style="accent-color:#007acc"
+                    />
+                    Новая
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                    <input
+                      type="radio"
+                      name="sessionMode"
+                      checked={session() === "reuse"}
+                      onChange={() => setSession("reuse")}
+                      style="accent-color:#007acc"
+                    />
+                    Переиспользовать
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                    <input
+                      type="radio"
+                      name="sessionMode"
+                      checked={session() === "last"}
+                      onChange={() => setSession("last")}
+                      style="accent-color:#007acc"
+                    />
+                    Последняя (--continue)
+                  </label>
+                </div>
+                {session() === "reuse" && (
+                  <div style="margin-top:8px">
+                    <label style="display:block;margin-bottom:6px;font-size:11px;color:#8e8e93">Сколько запусков переживает сессия (sessionMaxRuns, необязательно)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={sessionMaxRuns() || ""}
+                      onInput={(e) => setSessionMaxRuns(e.currentTarget.value)}
+                      placeholder="без ограничения"
+                      style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                    />
+                    <div style="font-size:11px;color:#8e8e93;margin-top:6px">sessionId генерируется плагином автоматически. При достижении лимита сессия удаляется, следующий запуск начинает чистую сессию.</div>
+                  </div>
+                )}
+              </div>
+
               <div
                 style={{
                   display: triggerType() !== "cron" ? "none" : "block",
@@ -3492,7 +3575,7 @@ export default Plugin.define({
                 </button>
                 {isEditing && (
                   <button
-                    onClick={() => { setEditingJob(null); setName(""); setSchedule("* * * * *"); setPrompt(""); setModel(""); setPriority(DEFAULT_PRIORITY); setRetryCount(0); setRetryDelay(60); setQualityGate(""); setDependsOn([]); setBeforeScript(""); setAfterScript(""); setTriggerType("cron"); setWatchPath(""); setRunAt(""); setDelaySeconds(""); setTimezone(""); setNotBefore(""); setNotAfter(""); setMcpServer(""); setMcpEventName(""); setMcpFilter(""); setWorkingDirectory(""); setWorkspaceId(""); setAllowedTools([]); setDeniedTools([]); resetMatrixForm(); setCronPreset("* * * * *"); setCronError("") }}
+                    onClick={() => { setEditingJob(null); setName(""); setSchedule("* * * * *"); setPrompt(""); setModel(""); setPriority(DEFAULT_PRIORITY); setRetryCount(0); setRetryDelay(60); setQualityGate(""); setDependsOn([]); setBeforeScript(""); setAfterScript(""); setTriggerType("cron"); setWatchPath(""); setRunAt(""); setDelaySeconds(""); setSession("new"); setSessionMaxRuns(""); setTimezone(""); setNotBefore(""); setNotAfter(""); setMcpServer(""); setMcpEventName(""); setMcpFilter(""); setWorkingDirectory(""); setWorkspaceId(""); setAllowedTools([]); setDeniedTools([]); resetMatrixForm(); setCronPreset("* * * * *"); setCronError("") }}
                     style="background:transparent;border:1px solid #333;border-radius:6px;padding:8px 16px;color:#ff3b30;cursor:pointer;font-size:13px;width:100%"
                   >
                     Отмена

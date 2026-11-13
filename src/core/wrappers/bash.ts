@@ -32,6 +32,10 @@ export interface BashWrapperOptions {
   qualityGate?: string;
   /** LLM-модель для `opencode run --model` (если не задана — модель по умолчанию). */
   model?: string;
+  /** Спринт 24: режим сессии — "new" | "reuse" | "last". */
+  sessionMode?: import("../session.js").SessionMode;
+  /** Спринт 24: id сессии для режима "reuse". */
+  sessionId?: string;
   /** Pre-flight команда: ненулевой код отменяет запуск задачи. */
   beforeScript?: string;
   /** Post-flight команда: выполняется даже при ошибке основной задачи. */
@@ -87,6 +91,8 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     model,
     beforeScript,
     afterScript,
+    sessionMode,
+    sessionId,
     oneShotCleanupCommand,
     allowedTools,
     deniedTools,
@@ -110,6 +116,9 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     `RECORDER_FILE=${shellQuote(recorderFile ?? "")}`,
     `QUALITY_GATE=${shellQuote(qualityGate ?? "")}`,
     `MODEL=${shellQuote(model ?? "")}`,
+    // Спринт 24: режим сессии — "new" (по умолчанию), "reuse" (--session <id>), "last" (--continue).
+    `SESSION_MODE=${shellQuote(sessionMode ?? "new")}`,
+    `SESSION_ID=${shellQuote(sessionId ?? "")}`,
     `BEFORE_SCRIPT=${shellQuote(beforeScript ?? "")}`,
     `AFTER_SCRIPT=${shellQuote(afterScript ?? "")}`,
     `ALLOWED_TOOLS=${shellQuote((allowedTools ?? []).join(","))}`,
@@ -243,10 +252,23 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     "",
     "# Модель указывается только если задана — иначе OpenCode берёт свою по умолчанию.",
     "run_opencode() {",
+    '  SESSION_ARGS=()',
+    '  case "$SESSION_MODE" in',
+    '    reuse)',
+    '      if [ -n "$SESSION_ID" ]; then',
+    '        SESSION_ARGS+=(--session "$SESSION_ID")',
+    '      fi',
+    '      ;;',
+    '    last)',
+    '      SESSION_ARGS+=(--continue)',
+    '      ;;',
+    '    *)',
+    '      ;;',
+    '  esac',
     '  if [ -n "$MODEL" ]; then',
-    '    opencode run --model "$MODEL" "$PROMPT"',
+    '    opencode run "${SESSION_ARGS[@]}" --model "$MODEL" "$PROMPT"',
     "  else",
-    '    opencode run "$PROMPT"',
+    '    opencode run "${SESSION_ARGS[@]}" "$PROMPT"',
     "  fi",
     "}",
     "",

@@ -63,6 +63,32 @@ registered natively (`schtasks /sc ONCE`, Linux `at`, macOS launchd cleanup
 agent), are not repeated after a plugin restart, and cannot be combined with a
 matrix.
 
+### Session continuity
+
+Each scheduled run can either start a fresh OpenCode session (`new`, default),
+reuse a persistent session stored on the task, or continue the latest session
+(`last`, mapped to `opencode --continue`). Set `session` on the task; for
+`reuse` a `sessionId` is auto-generated and stored with the task definition —
+it is never accepted from user input or exported as plain text.
+
+```json
+{
+  "name": "nightly-analyst",
+  "schedule": "0 3 * * *",
+  "session": "reuse",
+  "sessionMaxRuns": 10,
+  "prompt": "Refresh the analysis."
+}
+```
+
+- `session`: `new` (default), `reuse` (pass `--session <id>`), `last` (pass `--continue`).
+- `sessionMaxRuns` (only for `reuse`): how many runs the reused session
+  survives before it is deleted (`opencode session delete`) and a fresh session
+  is started. Unset/0 means no limit.
+- `sessionId` is per machine/profile. The internal run counter
+  (`sessionRunCount`) is never exported.
+- Old export/import files without session fields import as `new`.
+
 ### Timezones and launch windows
 
 - `timezone` — IANA zone per task (e.g. `Europe/Moscow`). `nextRun`/`prevRun`,
@@ -428,9 +454,11 @@ plugin, no installation step required.
 
 ## Limits and non-goals
 
-- **No one-shot scheduling yet.** Only cron, file and MCP-event triggers exist; use
-  `run_task_now` for immediate runs. A one-shot trigger is on the roadmap.
-- **No session continuity.** Every run starts a fresh `opencode run` session.
+- **No one-shot scheduling without `triggerType: "once"`.** One-shot runs exist
+  via `runAt`/`delaySeconds`; use `run_task_now` for immediate runs.
+- **No session continuity beyond the built-in `session` modes.** `new`, `reuse`
+  and `last` cover the common cases; per-message session forking/branching is
+  not supported.
 - **No sandbox.** Hooks, Quality Gates and prompts run with your user privileges.
 - **No authentication on the dashboard.** Localhost only by design.
 - **Secrets are not encrypted.** Use environment variables or an external secret

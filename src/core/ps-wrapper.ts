@@ -46,7 +46,9 @@ export const WRAPPER_SCRIPT = `param(
     [string]$QualityGate,
     [string]$BeforeScript,
     [string]$AfterScript,
-    [string]$EnvFile
+    [string]$EnvFile,
+    [string]$SessionMode,
+    [string]$SessionId
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -309,10 +311,15 @@ try {
     # Получаем путь к скрипту opencode (.ps1 или .cmd)
     $opencodeCmd = Get-Command opencode | Select-Object -ExpandProperty Source
 
-    # Формируем аргументы для opencode run
+    # Формируем аргументы для opencode run (Спринт 24: сессия).
     $opencodeArgs = @("run")
     if ($Model) {
         $opencodeArgs += @("--model", $Model)
+    }
+    if ($SessionMode -eq 'reuse' -and $SessionId) {
+        $opencodeArgs += @("--session", $SessionId)
+    } elseif ($SessionMode -eq 'last') {
+        $opencodeArgs += @("--continue")
     }
     if ($prompt) {
         $opencodeArgs += $prompt
@@ -486,6 +493,10 @@ export function lockFilePath(taskName: string): string {
  * @param deniedTools    список запрещённых инструментов (спринт 14, опционально)
  * @param scheduleGate   гейт расписания (спринт 19): проверка cron в таймзоне
  *                       и окна запуска перед стартом PowerShell-обёртки.
+ * @param envFile        env-файл workspace (спринт 21, опционально)
+ * @param sessionMode    режим сессии OpenCode (спринт 24): "new" (по умолчанию,
+ *                       без флагов), "reuse" (--session $SessionId), "last" (--continue)
+ * @param sessionId      идентификатор сессии для режима "reuse" (спринт 24, опционально)
  */
 export async function writeWrapperCmd(
   sanitizedName: string,
@@ -509,7 +520,9 @@ export async function writeWrapperCmd(
     forceFile?: string;
     forceTtlMs?: number;
   },
-  envFile?: string
+  envFile?: string,
+  sessionMode?: "new" | "reuse" | "last",
+  sessionId?: string
 ): Promise<string> {
   await fs.mkdir(WRAPPER_DIR, { recursive: true });
   const cmdPath = path.join(WRAPPER_DIR, `run-${sanitizedName}.cmd`);
@@ -588,6 +601,19 @@ export async function writeWrapperCmd(
     const safeEnvFile = envFile.replace(/[\r\n"]+/g, "").trim();
     if (safeEnvFile) {
       psArgs.push(`-EnvFile "${safeEnvFile}"`);
+    }
+  }
+
+  // Спринт 24: режим сессии OpenCode. sessionId передаём только для reuse.
+  const safeSessionMode =
+    sessionMode === "reuse" || sessionMode === "last" ? sessionMode : "new";
+  if (safeSessionMode !== "new") {
+    psArgs.push(`-SessionMode "${safeSessionMode}"`);
+    if (safeSessionMode === "reuse") {
+      const safeSessionId = (sessionId ?? "").replace(/[\r\n"]+/g, "").trim();
+      if (safeSessionId) {
+        psArgs.push(`-SessionId "${safeSessionId}"`);
+      }
     }
   }
 

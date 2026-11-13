@@ -34,6 +34,10 @@ export interface DryRunTaskItem {
   estimatedTokens?: number | null;
   /** Для клона матрицы — имя родителя-шаблона (Спринт 15). */
   matrixParent?: string;
+  /** Режим сессии OpenCode (Спринт 24): new (по умолчанию), reuse, last. */
+  session?: string | null;
+  /** Идентификатор переиспользуемой сессии (только для session=reuse). */
+  sessionId?: string | null;
   /**
    * Эффективное расписание cron-задачи (Спринт 19): пояс, окно запуска и
    * ближайшие срабатывания с учётом часового пояса. Позволяет проверить
@@ -311,6 +315,8 @@ export async function simulatePipeline(taskName: string): Promise<DryRunReport> 
       name: def.name,
       order: index,
       trigger,
+      session: def.session ?? "new",
+      sessionId: def.session === "reuse" ? def.sessionId ?? null : null,
       cwd,
       command,
       workspace: workspace ? { name: workspace.name, path: workspace.path } : undefined,

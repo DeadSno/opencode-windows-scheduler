@@ -5,6 +5,7 @@ import { notifyTaskCompletion } from "../notifications.js";
 import { finishRun, getHistory, recordRun, startRun } from "../db/history-repo.js";
 import { getSetting, setSetting } from "../db/settings-repo.js";
 import { getTask, listTasks } from "../db/tasks-repo.js";
+import { rotateSessionIfNeeded } from "./session.js";
 import type { TaskDefinition } from "../task-transfer.js";
 import type { HistoryRecord } from "../history.js";
 import {
@@ -462,6 +463,18 @@ async function handleCompletion(
         console.log(`[windows-scheduler] Запущена компенсирующая задача: ${chainTarget}`);
       }
     }
+  }
+
+  // Спринт 24: учёт запусков сессии (sessionRunCount) и ротация reuse-сессии
+  // при достижении sessionMaxRuns. Не должна ломать завершение запуска.
+  try {
+    await rotateSessionIfNeeded(taskName);
+  } catch (err: any) {
+    console.warn(
+      `[windows-scheduler] Не удалось обновить состояние сессии "${taskName}": ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
   }
 }
 
