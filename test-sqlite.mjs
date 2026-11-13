@@ -202,7 +202,45 @@ assert(
 assert(typeof recovered.durationMs === "number" && recovered.durationMs >= 0, "duration_ms рассчитан");
 assert(recoverInterruptedRuns() === 0, "повторный recovery ничего не меняет");
 
-// --- 5. Откат миграции при битом JSON ----------------------------------
+// --- 5. Миграция старой схемы metrics без partial ----------------------
+// Проверяем, что applySchema() добавляет колонку в уже существующую БД,
+// а накопленные счётчики при этом не теряются.
+const legacyDbPath = path.join(tempRoot, "legacy-metrics.db");
+const { DatabaseSync } = await import("node:sqlite");
+const legacyDb = new DatabaseSync(legacyDbPath);
+legacyDb.exec(`
+  CREATE TABLE metrics (
+    task_name TEXT PRIMARY KEY,
+    total INTEGER DEFAULT 0,
+    success INTEGER DEFAULT 0,
+    error INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    total_cost REAL DEFAULT 0
+  );
+`);
+legacyDb
+  .prepare("INSERT INTO metrics (task_name, total, success, error, total_tokens, total_cost) VALUES (?, ?, ?, ?, ?, ?)")
+  .run("Legacy Task", 5, 3, 2, 0, 0);
+legacyDb.close();
+
+initDb(legacyDbPath);
+const legacyColumns = getDb()
+  .prepare("PRAGMA table_info(metrics)")
+  .all()
+  .map((column) => String(column.name));
+assert(legacyColumns.includes("partial"), "старая БД получает колонку metrics.partial");
+const legacyMetrics = metricsRepo.getMetrics("Legacy Task");
+assert(
+  legacyMetrics.total === 5 &&
+    legacyMetrics.success === 3 &&
+    legacyMetrics.error === 2 &&
+    legacyMetrics.partial === 0,
+  "миграция старой БД не теряет накопленные метрики"
+);
+closeDb();
+initDb(dbPath);
+
+// --- 6. Откат миграции при битом JSON ----------------------------------
 const badDir = path.join(tempRoot, "bad-plugin");
 fs.mkdirSync(badDir, { recursive: true });
 fs.writeFileSync(path.join(badDir, "tasks.json"), "{ это не json");
@@ -224,7 +262,7 @@ initDb(dbPath);
 closeDb();
 initDb(dbPath);
 
-// --- 6. Экспорт БД и индикатор в дашборде ------------------------------
+// --- 7. Экспорт БД и индикатор в дашборде ------------------------------
 const { startDashboardServer, closeDashboardServer, getDashboardPort } = await import(
   "./dist/server.js"
 );
