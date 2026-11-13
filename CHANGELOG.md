@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Planned
+
+- One-shot scheduling, session continuity, guards, worktree isolation, declarative job files.
+
+## [1.1.0] - 2026-11-13
+
 ### Added
 
 - **Full agent parity:** `schedule_task` now accepts `qualityGate`, `dependsOn`, `retryCount`, `retryDelay`, `nextTaskOnSuccess`, `nextTaskOnError` and the complete matrix configuration (`concurrency`, `overrides`).
@@ -19,11 +25,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - **`/api/health`** now reports `version` (from package.json), `scheduler` (backend title), `queueDepth` (unfinished runs) and `db` status.
 - `test-retention.mjs` - 19 checks; `test-metrics.mjs` - 25 checks; both wired into `npm test`.
 
-### Planned
-
-- One-shot scheduling, session continuity, guards, worktree isolation, declarative job files.
-
-## [1.0.0] — 2026-11-13
+## [1.0.0] - 2026-11-13
 
 First public release.
 
@@ -45,5 +47,6 @@ First public release.
 - Deleting a matrix parent deletes its family, but deleting a workspace does not touch existing matrix jobs.
 - Agent tools cover a subset of the RPC surface (see roadmap item 0.4).
 
-[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/DeadSno/opencode-windows-scheduler/releases/tag/v1.0.0

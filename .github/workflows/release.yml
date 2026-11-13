@@ -41,11 +41,20 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Publish
+      # Publish to npm. Two supported paths, no silent skip either way:
+      #   1. NPM_TOKEN secret in the repo -> token auth.
+      #   2. No token -> npm Trusted Publisher (OIDC) configured on npmjs.com
+      #      for this repo + release.yml. Requires no secrets and signs the
+      #      package with provenance automatically.
+      - name: Publish (NPM_TOKEN)
         if: env.NPM_TOKEN != ''
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
+
+      - name: Publish (trusted publishing / OIDC)
+        if: env.NPM_TOKEN == ''
+        run: npm publish --provenance --access public
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
