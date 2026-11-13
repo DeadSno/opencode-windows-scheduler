@@ -1,0 +1,282 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { WRAPPER_DIR } from "../../types.js";
+import { shellQuote } from "../scheduler/posix.js";
+
+/** Параметры генерации bash-обёртки. */
+export interface BashWrapperOptions {
+  /** Безопасное имя для файла (латиница, цифры, -, _). */
+  sanitizedName: string;
+  /** Отображаемое имя задачи (может быть кириллицей). */
+  taskName: string;
+  /** Абсолютный путь к файлу с промптом. */
+  promptFile: string;
+  /** Таймаут в секундах (0 — без таймаута). */
+  timeoutSeconds: number;
+  /** Абсолютный путь к lock-файлу (рядом создаётся каталог <lock>.d). */
+  lockFile: string;
+  /** Рабочая директория задачи. */
+  workdir?: string;
+  /** Имя multi-repo workspace (для git-контекста в логе). */
+  workspaceName?: string;
+  /** Разрешённые инструменты (спринт 14, metadata-only). */
+  allowedTools?: string[];
+  /** Запрещённые инструменты (спринт 14, metadata-only). */
+  deniedTools?: string[];
+  /** Путь к файлу лога. */
+  logFile?: string;
+  /** Путь к скомпилированному record-history.js. */
+  recorderFile?: string;
+  /** Проверочная команда Quality Gate. */
+  qualityGate?: string;
+  /** LLM-модель для `opencode run --model` (если не задана — модель по умолчанию). */
+  model?: string;
+  /** Pre-flight команда: ненулевой код отменяет запуск задачи. */
+  beforeScript?: string;
+  /** Post-flight команда: выполняется даже при ошибке основной задачи. */
+  afterScript?: string;
+}
+
+/**
+ * Собирает текст bash-обёртки.
+ *
+ * Скрипт:
+ *  1. выставляет PATH (важно для cron, где окружение минимальное);
+ *  2. берёт атомарный lock через `mkdir` (аналог 'wx' в Node);
+ *  3. переходит в рабочую директорию проекта;
+ *  4. выполняет pre-flight (если задан) — при ошибке задача отменяется;
+ *  5. запускает `opencode run <промпт>` с перенаправлением вывода в лог;
+ *  6. по таймауту завершает процесс;
+ *  7. выполняет Quality Gate (если задан);
+ *  8. выполняет post-flight (если задан) — даже при ошибке задачи;
+ *  9. пишет историю/метрики через `node record-history.js`.
+ *
+ * Если задана модель, вызов превращается в `opencode run --model "<model>" <промпт>`.
+ */
+export function buildBashWrapperScript(options: BashWrapperOptions): string {
+  const {
+    taskName,
+    promptFile,
+    timeoutSeconds,
+    lockFile,
+    workdir,
+    workspaceName,
+    logFile,
+    recorderFile,
+    qualityGate,
+    model,
+    beforeScript,
+    afterScript,
+    allowedTools,
+    deniedTools,
+  } = options;
+
+  const lines: string[] = [
+    "#!/usr/bin/env bash",
+    "# Сгенерировано opencode-windows-scheduler. Не редактируйте вручную:",
+    "# файл перезаписывается при каждом обновлении задачи.",
+    "set -u",
+    "",
+    `TASK_NAME=${shellQuote(taskName)}`,
+    `PROMPT_FILE=${shellQuote(promptFile)}`,
+    `LOG_FILE=${shellQuote(logFile ?? path.join(WRAPPER_DIR, "task.log"))}`,
+    `LOCK_FILE=${shellQuote(lockFile)}`,
+    `WORKDIR=${shellQuote(workdir || process.cwd())}`,
+    `WORKSPACE_NAME=${shellQuote(workspaceName ?? "")}`,
+    `TIMEOUT_SECONDS=${Number.isFinite(timeoutSeconds) ? Math.max(0, Math.floor(timeoutSeconds)) : 3600}`,
+    `RECORDER_FILE=${shellQuote(recorderFile ?? "")}`,
+    `QUALITY_GATE=${shellQuote(qualityGate ?? "")}`,
+    `MODEL=${shellQuote(model ?? "")}`,
+    `BEFORE_SCRIPT=${shellQuote(beforeScript ?? "")}`,
+    `AFTER_SCRIPT=${shellQuote(afterScript ?? "")}`,
+    `ALLOWED_TOOLS=${shellQuote((allowedTools ?? []).join(","))}`,
+    `DENIED_TOOLS=${shellQuote((deniedTools ?? []).join(","))}`,
+    "",
+    "# cron запускает задачи с минимальным PATH — добавляем типовые каталоги.",
+    'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.bun/bin:$PATH"',
+    "",
+    'mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true',
+    "",
+    "log() {",
+    '  printf \'[%s] %s\\n\' "$(date \'+%Y-%m-%d %H:%M:%S\')" "$*" >> "$LOG_FILE" 2>/dev/null || true',
+    "}",
+    "",
+    "# Атомарная блокировка: mkdir завершается ошибкой, если каталог уже есть.",
+    'if ! mkdir "$LOCK_FILE.d" 2>/dev/null; then',
+    '  log "[scheduler] Задача \'$TASK_NAME\' уже выполняется — пропуск запуска."',
+    "  exit 0",
+    "fi",
+    'cleanup() { rmdir "$LOCK_FILE.d" 2>/dev/null || rm -rf "$LOCK_FILE.d" 2>/dev/null; }',
+    "trap cleanup EXIT INT TERM",
+    "",
+    'if [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ]; then',
+    '  cd "$WORKDIR" || { log "[scheduler] Не удалось перейти в $WORKDIR"; exit 1; }',
+    "fi",
+    "",
+    'if [ -n "$WORKSPACE_NAME" ]; then',
+    '  GIT_BRANCH="$(git -C "$WORKDIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"',
+    '  GIT_REMOTE="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null || true)"',
+    '  [ -n "$GIT_BRANCH" ] || GIT_BRANCH="-"',
+    '  [ -n "$GIT_REMOTE" ] || GIT_REMOTE="-"',
+    '  log "[workspace] name=$WORKSPACE_NAME, cwd=$WORKDIR, branch=$GIT_BRANCH, remote=$GIT_REMOTE"',
+    "fi",
+    "",
+    "# Role-scoped tools: ограничения фиксируются в логе. Позиция metadata-only:",
+    "# opencode 2.2.3 не поддерживает allow/deny флаги, поэтому запрет мы лишь",
+    "# логируем и предупреждаем, но не блокируем.",
+    'if [ -n "$ALLOWED_TOOLS" ] || [ -n "$DENIED_TOOLS" ]; then',
+    '  log "[role-scoped] allowed=[$ALLOWED_TOOLS], denied=[$DENIED_TOOLS]"',
+    '  case ",$DENIED_TOOLS," in',
+    '  *",write,"*|*",edit,"*|*",bash,"*|*",apply_patch,"*|*",remove,"*)',
+    '    log "[role-scoped] ВНИМАНИЕ: deniedTools содержит опасные инструменты ($DENIED_TOOLS). Запрет не может быть применён автоматически (metadata-only), проверьте промпт задачи."',
+    "    ;;",
+    "  esac",
+    "fi",
+    "",
+    'if ! command -v opencode >/dev/null 2>&1; then',
+    '  log "[scheduler] ОШИБКА: opencode не найден в PATH ($PATH)."',
+    "  exit 127",
+    "fi",
+    "",
+    'PROMPT="$(cat "$PROMPT_FILE" 2>/dev/null || true)"',
+    'START_EPOCH="$(date +%s)"',
+    'STARTED_AT="$(date -u \'+%Y-%m-%dT%H:%M:%SZ\')"',
+    'EXIT_CODE=0',
+    'ERROR_MESSAGE=""',
+    'PRE_FLIGHT_STATUS="skipped"',
+    'POST_FLIGHT_STATUS="skipped"',
+    'SKIP_MAIN=0',
+    "",
+    `log "[scheduler] Запуск задачи '$TASK_NAME'..."`,
+    "",
+    "# Crash recovery: фиксируем начало до pre-flight. Если процесс убьют,",
+    "# останется finished_at = NULL и recovery при следующем старте пометит error.",
+    'RUN_ID=""',
+    'if [ -n "$RECORDER_FILE" ] && command -v node >/dev/null 2>&1; then',
+    '  RUN_ID="$(node "$RECORDER_FILE" --start "$TASK_NAME" "$STARTED_AT" 2>> "$LOG_FILE" | tail -n 1)"',
+    "fi",
+    "",
+    "# Pre-flight: выполняется до основной задачи. Ненулевой код отменяет запуск.",
+    'if [ -n "$BEFORE_SCRIPT" ]; then',
+    '  log "[scheduler] Pre-flight: $BEFORE_SCRIPT"',
+    '  bash -lc "$BEFORE_SCRIPT" >> "$LOG_FILE" 2>&1',
+    "  PRE_CODE=$?",
+    '  if [ "$PRE_CODE" -ne 0 ]; then',
+    '    log "[scheduler] ОШИБКА: Pre-flight script failed (код $PRE_CODE)."',
+    '    PRE_FLIGHT_STATUS="error"',
+    '    ERROR_MESSAGE="Pre-flight script failed"',
+    "    EXIT_CODE=1",
+    "    SKIP_MAIN=1",
+    "  else",
+    '    PRE_FLIGHT_STATUS="success"',
+    '    log "[scheduler] Pre-flight успешно завершён."',
+    "  fi",
+    "fi",
+    "",
+    'if [ "$SKIP_MAIN" -eq 0 ]; then',
+    "",
+    "# Модель указывается только если задана — иначе OpenCode берёт свою по умолчанию.",
+    "run_opencode() {",
+    '  if [ -n "$MODEL" ]; then',
+    '    opencode run --model "$MODEL" "$PROMPT"',
+    "  else",
+    '    opencode run "$PROMPT"',
+    "  fi",
+    "}",
+    "",
+    'if [ "$TIMEOUT_SECONDS" -gt 0 ] 2>/dev/null; then',
+    '  run_opencode >> "$LOG_FILE" 2>&1 &',
+    "  CHILD=$!",
+    '  ( sleep "$TIMEOUT_SECONDS"; kill -TERM "$CHILD" 2>/dev/null; sleep 5; kill -KILL "$CHILD" 2>/dev/null ) &',
+    "  WATCHDOG=$!",
+    '  wait "$CHILD"',
+    "  EXIT_CODE=$?",
+    '  kill "$WATCHDOG" 2>/dev/null || true',
+    '  wait "$WATCHDOG" 2>/dev/null || true',
+    "else",
+    '  run_opencode >> "$LOG_FILE" 2>&1',
+    "  EXIT_CODE=$?",
+    "fi",
+    "",
+    'if [ "$EXIT_CODE" -ne 0 ]; then',
+    '  log "[scheduler] Задача \'$TASK_NAME\' завершилась с кодом $EXIT_CODE."',
+    '  ERROR_MESSAGE="Код возврата $EXIT_CODE"',
+    "else",
+    '  log "[scheduler] Задача \'$TASK_NAME\' успешно завершена."',
+    "fi",
+    "",
+    'if [ -n "$QUALITY_GATE" ] && [ "$EXIT_CODE" -eq 0 ]; then',
+    '  log "[scheduler] Запуск Quality Gate: $QUALITY_GATE"',
+    '  bash -lc "$QUALITY_GATE" >> "$LOG_FILE" 2>&1',
+    "  GATE_CODE=$?",
+    '  if [ "$GATE_CODE" -ne 0 ]; then',
+    '    log "[scheduler] ОШИБКА: Quality Gate провален. Код возврата: $GATE_CODE"',
+    '    ERROR_MESSAGE="Quality Gate провален. Код возврата: $GATE_CODE"',
+    "    EXIT_CODE=1",
+    "  else",
+    '    log "[scheduler] Quality Gate пройден."',
+    "  fi",
+    "fi",
+    "",
+    "fi # конец блока основной задачи",
+    "",
+    "# Post-flight: выполняется ВСЕГДА, даже если основная задача упала.",
+    'if [ -n "$AFTER_SCRIPT" ]; then',
+    '  log "[scheduler] Post-flight: $AFTER_SCRIPT"',
+    '  bash -lc "$AFTER_SCRIPT" >> "$LOG_FILE" 2>&1',
+    "  POST_CODE=$?",
+    '  if [ "$POST_CODE" -ne 0 ]; then',
+    '    log "[scheduler] ОШИБКА: Post-flight script failed (код $POST_CODE)."',
+    '    POST_FLIGHT_STATUS="error"',
+    '    if [ "$EXIT_CODE" -eq 0 ]; then',
+    '      ERROR_MESSAGE="Post-flight script failed"',
+    "      EXIT_CODE=1",
+    "    fi",
+    "  else",
+    '    POST_FLIGHT_STATUS="success"',
+    '    log "[scheduler] Post-flight успешно завершён."',
+    "  fi",
+    "fi",
+    "",
+    'END_EPOCH="$(date +%s)"',
+    'DURATION_MS=$(( (END_EPOCH - START_EPOCH) * 1000 ))',
+    'STATUS="error"',
+    'if [ "$EXIT_CODE" -eq 0 ]; then STATUS="success"; fi',
+    "",
+    'if [ -n "$RECORDER_FILE" ] && command -v node >/dev/null 2>&1; then',
+    '  if [ -n "$RUN_ID" ]; then',
+    '    node "$RECORDER_FILE" --finish "$RUN_ID" "$TASK_NAME" "$STATUS" "$DURATION_MS" "$ERROR_MESSAGE" "-" "-" "$MODEL" "$PRE_FLIGHT_STATUS" "$POST_FLIGHT_STATUS" >> "$LOG_FILE" 2>&1 || true',
+    "  else",
+    '    node "$RECORDER_FILE" "$TASK_NAME" "$STATUS" "$STARTED_AT" "$DURATION_MS" "$ERROR_MESSAGE" "-" "-" "$MODEL" "$PRE_FLIGHT_STATUS" "$POST_FLIGHT_STATUS" >> "$LOG_FILE" 2>&1 || true',
+    "  fi",
+    "fi",
+    "",
+    'exit "$EXIT_CODE"',
+    "",
+  ];
+
+  return lines.join("\n");
+}
+
+/**
+ * Записывает per-task bash-обёртку и делает её исполняемой.
+ * Возвращает абсолютный путь к .sh-файлу.
+ */
+export async function writeBashWrapper(
+  options: BashWrapperOptions
+): Promise<string> {
+  await fs.mkdir(WRAPPER_DIR, { recursive: true });
+  const scriptPath = path.join(
+    WRAPPER_DIR,
+    `run-${options.sanitizedName}.sh`
+  );
+  const script = buildBashWrapperScript(options);
+  await fs.writeFile(scriptPath, script, "utf8");
+  await fs.chmod(scriptPath, 0o755);
+  return scriptPath;
+}
+
+/** Путь к bash-обёртке задачи (для диагностики/тестов). */
+export function bashWrapperPath(sanitizedName: string): string {
+  return path.join(WRAPPER_DIR, `run-${sanitizedName}.sh`);
+}

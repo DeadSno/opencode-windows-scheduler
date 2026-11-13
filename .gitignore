@@ -24,9 +24,9 @@ mx-dbg*/
 scheduler.db
 scheduler.db-shm
 scheduler.db-wal
-prompts/
-wrappers/
-locks/
+/prompts/
+/wrappers/
+/locks/
 *.tgz
 
 # Editors and OS
