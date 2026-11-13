@@ -15,6 +15,7 @@ const {
   normalizeSessionMode,
   buildSessionArgs,
   shouldRotateSession,
+  preservedSessionRunCount,
   rotateSessionIfNeeded,
 } = await import("./dist/core/session.js");
 const { buildBashWrapperScript } = await import("./dist/core/wrappers/bash.js");
@@ -87,6 +88,33 @@ try {
     check("runCount ниже лимита — без ротации", shouldRotateSession(2, 5) === false);
     check("runCount на лимите — ротация", shouldRotateSession(5, 5) === true);
     check("runCount выше лимита — ротация", shouldRotateSession(9, 5) === true);
+  }
+
+  section("preservedSessionRunCount (редактирование задачи)");
+  {
+    const id = generateSessionId();
+    const previous = { session: "reuse", sessionId: id, sessionRunCount: 2 };
+    check(
+      "та же сессия и id → счётчик сохраняется",
+      preservedSessionRunCount(previous, "reuse", id) === 2
+    );
+    check(
+      "другой id → счётчик сбрасывается",
+      preservedSessionRunCount(previous, "reuse", generateSessionId()) === 0
+    );
+    check(
+      "другой режим → счётчик сбрасывается",
+      preservedSessionRunCount(previous, "new", undefined) === 0
+    );
+    check("нет прежнего определения → 0", preservedSessionRunCount(undefined, "reuse", id) === 0);
+    check(
+      "undefined вместо счётчика → 0",
+      preservedSessionRunCount({ session: "reuse", sessionId: id }, "reuse", id) === 0
+    );
+    check(
+      "режим last без id → счётчик сохраняется",
+      preservedSessionRunCount({ session: "last", sessionRunCount: 4 }, "last", undefined) === 4
+    );
   }
 
   section("Баш-обёртка передаёт флаги сессии");

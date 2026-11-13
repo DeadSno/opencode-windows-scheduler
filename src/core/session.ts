@@ -54,6 +54,24 @@ export function shouldRotateSession(runCount: number, maxRuns: number): boolean 
 }
 
 /**
+ * Счётчик запусков сессии при сохранении определения задачи.
+ *
+ * Редактирование не должно обнулять прогресс к sessionMaxRuns, если сессия
+ * осталась прежней. При смене режима или id сессии счётчик начинается заново.
+ */
+export function preservedSessionRunCount(
+  previous:
+    | { session?: SessionMode; sessionId?: string; sessionRunCount?: number }
+    | undefined,
+  session: SessionMode,
+  sessionId: string | undefined
+): number {
+  if (!previous) return 0;
+  if (previous.session !== session || previous.sessionId !== sessionId) return 0;
+  return previous.sessionRunCount ?? 0;
+}
+
+/**
  * Best-effort ротация переиспользуемой сессии после завершения запуска.
  * Удаляет сессию через opencode CLI, очищает sessionId в определении задачи
  * и пишет событие в structured log. Никогда не бросает — сбой ротации

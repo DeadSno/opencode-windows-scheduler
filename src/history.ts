@@ -54,6 +54,21 @@ export interface Metrics {
   costUsd?: number;
 }
 
+/**
+ * Оставляет по одной самой свежей записи на задачу.
+ * `records` должны быть отсортированы от новых к старым (как loadHistory).
+ */
+export function latestHistoryByTask(
+  records: readonly HistoryRecord[]
+): Map<string, HistoryRecord> {
+  const latest = new Map<string, HistoryRecord>();
+  for (const record of records) {
+    const key = record.taskName.toLowerCase();
+    if (!latest.has(key)) latest.set(key, record);
+  }
+  return latest;
+}
+
 /** Читает историю запусков из БД (от новых к старым, как раньше — 200 записей). */
 export async function loadHistory(): Promise<HistoryRecord[]> {
   return getHistory(null, 200).map((record) => ({

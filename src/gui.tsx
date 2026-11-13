@@ -4,7 +4,7 @@ import { SchedulerRpc } from "./rpc.js"
 import { loadHistory, loadMetrics, type HistoryRecord } from "./history.js"
 
 /** Статус задачи для отображения в GUI. */
-type JobStatus = "running" | "success" | "error" | "partial" | "unknown"
+type JobStatus = "running" | "success" | "error" | "partial" | "idle" | "unknown"
 
 /** Per-workspace переопределения клона (Спринт 17). */
 interface MatrixOverrideFields {
@@ -1753,7 +1753,8 @@ export default Plugin.define({
 
     const showCustomCron = cronPreset() === "__custom__"
     const isEditing = editingJob() !== null
-    // Валидация формы: для cron нужен schedule, для once — runAt либо delaySeconds.
+    // Валидация формы: возвращает причину, почему сохранение недоступно.
+    // Одна функция — и для disabled, и для подсказки в title кнопки.
     /** Валиден ли IANA-пояс (пустой — значит пояс системы). */
     const validTimezone = () => {
       const tz = (timezone() || "").trim()
@@ -1766,18 +1767,40 @@ export default Plugin.define({
       }
     }
 
-    const canSubmit = () =>
-      !!(name() || "").trim() &&
-      !!(prompt() || "").trim() &&
-      (triggerType() !== "cron" || !!(schedule() || "").trim()) &&
-      (triggerType() !== "once" || !!(runAt() || "").trim() || !!(delaySeconds() || "").trim()) &&
-      (!matrixMode() || matrixWorkspaceIds().length > 0) &&
-      // sessionMaxRuns и concurrency — только положительные целые.
-      (session() !== "reuse" || !(sessionMaxRuns() || "").trim() || /^[1-9]\d*$/.test(sessionMaxRuns().trim())) &&
-      (!matrixMode() || !(matrixConcurrency() || "").trim() || /^[1-9]\d*$/.test(matrixConcurrency().trim())) &&
-      // Окно запуска задаётся только парой «с/по».
-      ((notBefore() || "").trim() === "") === ((notAfter() || "").trim() === "") &&
-      validTimezone()
+    /** Целое число в диапазоне (NaN и пустое поле не проходят). */
+    const isIntInRange = (value: number, min: number, max?: number) =>
+      Number.isInteger(value) && value >= min && (max === undefined || value <= max)
+
+    const validationError = (): string => {
+      const taskName = (name() || "").trim()
+      if (!taskName) return "Укажите имя задачи."
+      if (!(prompt() || "").trim()) return "Укажите промпт."
+      if (triggerType() === "cron" && !(schedule() || "").trim()) return "Укажите cron-расписание."
+      if (triggerType() === "once" && !(runAt() || "").trim() && !(delaySeconds() || "").trim()) {
+        return "Укажите время запуска или задержку."
+      }
+      if (matrixMode() && matrixWorkspaceIds().length === 0) return "Выберите хотя бы один workspace для матрицы."
+      if (session() === "reuse" && (sessionMaxRuns() || "").trim() && !/^[1-9]\d*$/.test(sessionMaxRuns().trim())) {
+        return "Лимит запусков сессии — целое положительное число."
+      }
+      if (matrixMode() && (matrixConcurrency() || "").trim() && !/^[1-9]\d*$/.test(matrixConcurrency().trim())) {
+        return "Concurrency матрицы — целое положительное число."
+      }
+      if (((notBefore() || "").trim() === "") !== ((notAfter() || "").trim() === "")) {
+        return "Окно запуска задаётся только парой «с/по»."
+      }
+      if (!validTimezone()) return "Неизвестная таймзона. Укажите IANA-пояс, например Europe/Moscow."
+      if (!isIntInRange(priority(), 0, 10)) return "Приоритет — целое число от 0 до 10."
+      if (!isIntInRange(retryCount(), 0)) return "Количество повторов — целое число ≥ 0."
+      if (!isIntInRange(retryDelay(), 0)) return "Задержка повтора — целое число секунд ≥ 0."
+      const self = taskName.toLowerCase()
+      if (dependsOn().some((dep) => dep.trim().toLowerCase() === self)) {
+        return "Задача не может зависеть от самой себя."
+      }
+      return ""
+    }
+
+    const canSubmit = () => validationError() === ""
 
     const jobsArr = () => jobs() ?? []
     const visibleJobs = () => {
@@ -1973,6 +1996,8 @@ export default Plugin.define({
                   ? "🔴 Ошибка"
                   : job.status === "partial"
                   ? "🟠 Частично"
+                  : job.status === "idle"
+                  ? "⚪ Не запускалась"
                   : "⚪ Неизвестно"}
               </div>
             )}
@@ -3612,6 +3637,7 @@ export default Plugin.define({
                 <button
                   onClick={handleCreate}
                   disabled={busy() || !canSubmit()}
+                  title={!canSubmit() ? validationError() : undefined}
                   style={`display:block;width:100%;padding:10px;margin-top:8px;background:${busy() ? "#666" : "#007acc"};color:white;border-radius:6px;border:none;cursor:${busy() || !canSubmit() ? "not-allowed" : "pointer"};font-size:13px;font-weight:500;opacity:${busy() || !canSubmit() ? 0.6 : 1}`}
                 >
                   {busy() ? "Создание..." : isEditing ? "Сохранить" : "Создать задачу"}

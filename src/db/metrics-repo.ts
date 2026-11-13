@@ -53,6 +53,8 @@ export function incrementMetricsUnsafe(
   tokens = 0,
   costUsd = 0
 ): void {
+  // В таблице metrics два счётчика: success и error. Сюда попадают все
+  // неуспешные статусы, включая partial; в аналитике partial считается отдельно.
   const success = status === "success" ? 1 : 0;
   const error = status === "success" ? 0 : 1;
   const safeTokens = Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;

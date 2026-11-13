@@ -15,6 +15,7 @@ import {
 import {
   generateSessionId,
   normalizeSessionMode,
+  preservedSessionRunCount,
   type SessionMode,
 } from "./core/session.js";
 import { ensureWrapper, writePromptFile, writeWrapperCmd, lockFilePath, requestImmediateRun } from "./core/ps-wrapper.js";
@@ -36,7 +37,7 @@ import {
   syncMatrixFamily,
 } from "./core/matrix.js";
 import { SchedulerRpc } from "./rpc.js";
-import { loadHistory, loadMetrics } from "./history.js";
+import { latestHistoryByTask, loadHistory, loadMetrics } from "./history.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import type {
   HistorySettings,
@@ -3897,7 +3898,10 @@ async function schedulerCreateTask(
   }
 
   // Сохраняем определение задачи для последующего экспорта/импорта.
-  const existingQueue = matrixMode === "sync" ? getTask(name)?.matrixQueue : undefined;
+  // Определение до перезаписи: нужно и для очереди матрицы, и для счётчика сессии.
+  const previousDefinition = getTask(name);
+  const existingQueue =
+    matrixMode === "sync" ? previousDefinition?.matrixQueue : undefined;
   const taskDefinition: TaskDefinition = {
     name,
     schedule,
@@ -3921,7 +3925,14 @@ async function schedulerCreateTask(
     session: effectiveSession,
     sessionId: effectiveSessionId,
     sessionMaxRuns,
-    sessionRunCount: 0,
+    // Раньше редактирование всегда сбрасывало счётчик в 0, из-за чего лимит
+    // sessionMaxRuns обходился правкой любого поля задачи. Сохраняем счётчик,
+    // только если сессия и её id не изменились.
+    sessionRunCount: preservedSessionRunCount(
+      previousDefinition,
+      effectiveSession,
+      effectiveSessionId
+    ),
     watchPath: normalizedMatrix ? undefined : watchPath,
     timezone: normalizedTz,
     notBefore: normalizedNotBefore,
@@ -4108,13 +4119,8 @@ async function collectTasksView() {
 
   // Читаем историю один раз, чтобы определить финальный статус по последней записи.
   const history = await loadHistory();
-  const lastByTask = new Map<string, { status: string; error?: string | null }>();
-  for (const record of history) {
-    lastByTask.set(record.taskName, {
-      status: record.status,
-      error: record.error,
-    });
-  }
+  // loadHistory() отдаёт записи от новых к старым; helper оставляет самую свежую.
+  const lastByTask = latestHistoryByTask(history);
 
   // Читаем определения задач один раз (расписание, повторы, цепочки, директория).
   const defs = await loadTaskDefinitions();
@@ -4161,11 +4167,13 @@ async function collectTasksView() {
     let status = mapStatus(t.status);
 
     // Приоритет 2: если последняя запись в истории — error/timeout, перебиваем на error.
-    const last = lastByTask.get(name);
-    if (last && (last.status === "error" || last.status === "timeout")) {
-      status = "error";
-    } else if (last && last.status === "success") {
-      status = "success";
+    const last = lastByTask.get(name.toLowerCase());
+    if (last) {
+      if (last.status === "error" || last.status === "timeout") status = "error";
+      else if (last.status === "success") status = "success";
+      // partial раньше терялся: задача после частичного запуска выглядела
+      // как «готова»/«не запускалась», хотя запуск был неуспешным.
+      else if (last.status === "partial") status = "partial";
     }
 
     const def = defs.find((d) => d.name.toLowerCase() === name.toLowerCase());
@@ -4284,7 +4292,10 @@ function mapStatus(status?: string): string {
   if (!status) return "unknown";
   const s = status.toLowerCase();
   if (s.includes("running") || s.includes("выполняется")) return "running";
-  if (s.includes("ready") || s.includes("готов")) return "success";
+  // "Ready" в планировщике Windows означает лишь «готова к запуску», а не
+  // успешное выполнение. Раньше такие задачи показывались зелёными, хотя
+  // могли ни разу не запускаться.
+  if (s.includes("ready") || s.includes("готов")) return "idle";
   if (s.includes("disabled")) return "unknown";
   return "unknown";
 }

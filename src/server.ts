@@ -1288,14 +1288,14 @@ function renderPage(): string {
     <div class="cards">
       <div class="card"><div class="num neu" id="m-total">—</div><div class="lbl">Всего запусков</div></div>
       <div class="card"><div class="num ok" id="m-success">—</div><div class="lbl">Успешных</div></div>
-      <div class="card"><div class="num err" id="m-error">—</div><div class="lbl">С ошибками</div></div>
+      <div class="card" title="Неуспешные запуски: ошибки и частичные выполнения (partial)"><div class="num err" id="m-error">—</div><div class="lbl">Неуспешных</div></div>
       <div class="card"><div class="num" id="m-tasks">—</div><div class="lbl">Задач в системе</div></div>
       <div class="card"><div class="num neu" id="m-tokens">—</div><div class="lbl">Всего токенов</div></div>
       <div class="card"><div class="num" id="m-cost">—</div><div class="lbl">Примерная стоимость</div></div>
     </div>
 
     <div class="graph" id="graph" style="display:none">
-      <div class="graph-title">🔗 Граф зависимостей (DAG)</div>
+      <div class="graph-title">🔗 Цепочки зависимостей (DAG)</div>
       <div id="graph-lines"></div>
     </div>
 
@@ -1461,6 +1461,9 @@ function renderPage(): string {
     }
     if (status === 'error') return '<span class="badge errb">🔴 Ошибка</span>';
     if (status === 'partial') return '<span class="badge part">🟠 Частично</span>';
+    if (status === 'idle') {
+      return '<span class="badge unk" title="Задача создана, но ещё ни разу не запускалась">⚪ Не запускалась</span>';
+    }
     return '<span class="badge unk">⚪ Неизвестно</span>';
   }
 
@@ -1481,7 +1484,8 @@ function renderPage(): string {
 
   function metricsHtml(m) {
     var mm = m || { total: 0, success: 0, error: 0 };
-    return 'Всего: <b>' + mm.total + '</b> · ✅ <b>' + mm.success + '</b> · ❌ <b>' + mm.error + '</b>';
+    // В таблице metrics поле error хранит все неуспешные запуски, включая partial.
+    return 'Всего: <b>' + mm.total + '</b> · ✅ <b>' + mm.success + '</b> · <span title="Ошибки и частичные запуски (partial)">⚠️ <b>' + mm.error + '</b></span>';
   }
 
   function depsHtml(t) {
@@ -1600,8 +1604,9 @@ function renderPage(): string {
     for (var j = 0; j < daily.length; j++) {
       var d = daily[j];
       var h = d.total > 0 ? Math.max(3, Math.round((d.total / max) * 92)) : 2;
-      var color = d.total === 0 ? 'var(--border)' : (d.error > 0 ? 'var(--err)' : 'var(--ok)');
-      var tip = d.date + ': всего ' + d.total + ', успех ' + d.success + ', ошибок ' + d.error + ', ' + money(d.costUsd);
+      var isPartialOnly = d.error === 0 && d.partial > 0;
+      var color = d.total === 0 ? 'var(--border)' : (d.error > 0 ? 'var(--err)' : (isPartialOnly ? 'var(--run)' : 'var(--ok)'));
+      var tip = d.date + ': всего ' + d.total + ', успех ' + d.success + ', ошибок ' + d.error + ', частично ' + d.partial + ', ' + money(d.costUsd);
       bars += '<div class="an-bar" title="' + esc(tip) + '">' +
         '<div class="an-bar-fill" style="height:' + h + '%' + ';background:' + esc(color) + '"></div>' +
         '<div class="an-label">' + esc(String(d.date).slice(5)) + '</div>' +
