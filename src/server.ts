@@ -653,6 +653,10 @@ async function handleRequest(
     // Экспорт истории: CSV (для Excel) или JSON (для скриптов).
     if (req.method === "GET" && pathname === "/api/history/export") {
       const format = (url.searchParams.get("format") || "csv").toLowerCase();
+      if (format !== "csv" && format !== "json") {
+        sendJson(res, 400, { error: "Неподдерживаемый формат экспорта. Допустимые: csv, json." });
+        return;
+      }
       const records = getHistory(null, 100000);
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       if (format === "json") {
