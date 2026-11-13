@@ -73,6 +73,7 @@ interface Job {
   runsError?: number
   nextRun?: string
   paused?: boolean
+  orphaned?: boolean
   retryCount?: number
   retryDelay?: number
   qualityGate?: string
@@ -764,7 +765,15 @@ export default Plugin.define({
      *  для несохранённой формы показываем локальную оценку без RPC). */
     function buildFormCommand(): string {
       const modelArg = model().trim() ? ` --model ${model().trim()}` : ""
-      return `opencode run${modelArg} "${prompt().replace(/\s+/g, " ").trim()}"`
+      // Обёртка добавляет флаги сессии сама; показываем их в превью, чтобы
+      // команда не расходилась с реальным запуском.
+      const sessionArg =
+        session() === "last"
+          ? " --continue"
+          : session() === "reuse"
+          ? " --session <id>"
+          : ""
+      return `opencode run${modelArg}${sessionArg} "${prompt().replace(/\s+/g, " ").trim()}"`
     }
 
     // Экспорт/импорт задач
@@ -1235,7 +1244,9 @@ export default Plugin.define({
           runsSuccess: typeof t.runsSuccess === "number" ? t.runsSuccess : 0,
           runsError: typeof t.runsError === "number" ? t.runsError : 0,
           nextRun: t.nextRun ?? undefined,
-          paused: t.status?.toLowerCase().includes("disabled"),
+          // Признак паузы приходит из collectTasksView явно (disabled в ОС).
+          paused: Boolean((t as any).paused),
+          orphaned: Boolean((t as any).orphaned),
           retryCount: t.retryCount ?? 0,
           retryDelay: t.retryDelay ?? 60,
           qualityGate: t.qualityGate ?? undefined,
@@ -1743,12 +1754,30 @@ export default Plugin.define({
     const showCustomCron = cronPreset() === "__custom__"
     const isEditing = editingJob() !== null
     // Валидация формы: для cron нужен schedule, для once — runAt либо delaySeconds.
+    /** Валиден ли IANA-пояс (пустой — значит пояс системы). */
+    const validTimezone = () => {
+      const tz = (timezone() || "").trim()
+      if (!tz) return true
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz })
+        return true
+      } catch {
+        return false
+      }
+    }
+
     const canSubmit = () =>
       !!(name() || "").trim() &&
       !!(prompt() || "").trim() &&
       (triggerType() !== "cron" || !!(schedule() || "").trim()) &&
       (triggerType() !== "once" || !!(runAt() || "").trim() || !!(delaySeconds() || "").trim()) &&
-      (!matrixMode() || matrixWorkspaceIds().length > 0)
+      (!matrixMode() || matrixWorkspaceIds().length > 0) &&
+      // sessionMaxRuns и concurrency — только положительные целые.
+      (session() !== "reuse" || !(sessionMaxRuns() || "").trim() || /^[1-9]\d*$/.test(sessionMaxRuns().trim())) &&
+      (!matrixMode() || !(matrixConcurrency() || "").trim() || /^[1-9]\d*$/.test(matrixConcurrency().trim())) &&
+      // Окно запуска задаётся только парой «с/по».
+      ((notBefore() || "").trim() === "") === ((notAfter() || "").trim() === "") &&
+      validTimezone()
 
     const jobsArr = () => jobs() ?? []
     const visibleJobs = () => {
@@ -1934,13 +1963,17 @@ export default Plugin.define({
               </div>
             ) : (
               <div style="font-size:12px;font-weight:600;white-space:nowrap">
-                {job.status === "success"
+                {job.orphaned
+                  ? "🧟 Нет в планировщике"
+                  : job.paused
+                  ? "⏸ Пауза"
+                  : job.status === "success"
                   ? "🟢 Готова"
                   : job.status === "error"
                   ? "🔴 Ошибка"
                   : job.status === "partial"
                   ? "🟠 Частично"
-                  : "⚪ Пауза"}
+                  : "⚪ Неизвестно"}
               </div>
             )}
           </div>
@@ -1962,8 +1995,18 @@ export default Plugin.define({
             {winterMode() && hoveredRun() === job.name ? "❄️" : "▶"}
           </button>
           <button
-            onClick={() => void (job.paused ? handleResume(job.name) : handlePause(job.name))}
-            title={job.paused ? `Возобновить "${job.name}"` : `Поставить на паузу "${job.name}"`}
+            onClick={() => {
+              if (job.orphaned) return
+              void (job.paused ? handleResume(job.name) : handlePause(job.name))
+            }}
+            disabled={!!job.orphaned}
+            title={
+              job.orphaned
+                ? `Задача "${job.name}" отсутствует в планировщике ОС — пауза недоступна`
+                : job.paused
+                ? `Возобновить "${job.name}"`
+                : `Поставить на паузу "${job.name}"`
+            }
             style={iconButtonStyle()}
             onMouseEnter={(e) => iconHover(e, true)}
             onMouseLeave={(e) => iconHover(e, false)}

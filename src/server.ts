@@ -519,7 +519,9 @@ async function handleRequest(
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-    const knownPost = /^\/api\/(run|delete|hooks)\//.test(pathname);
+    const knownPost =
+      /^\/api\/(run|delete|hooks|cancel-matrix)\//.test(pathname) ||
+      pathname === "/api/matrix-cleanup";
     if (knownPost && req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
@@ -677,8 +679,26 @@ async function handleRequest(
     }
 
     if (req.method === "GET" && pathname === "/api/history") {
-      const records = await loadHistory();
-      sendJson(res, 200, { records });
+      // Фильтры как у RPC get_history: имя задачи и статус. limit — необязательный.
+      const taskFilter = (url.searchParams.get("taskName") ?? url.searchParams.get("task") ?? "")
+        .trim()
+        .toLowerCase();
+      const statusFilter = (url.searchParams.get("status") ?? "").trim().toLowerCase();
+      const limitRaw = Number(url.searchParams.get("limit") ?? 200);
+      const limit = Number.isFinite(limitRaw)
+        ? Math.max(1, Math.min(10000, Math.floor(limitRaw)))
+        : 200;
+      let records = await loadHistory();
+      if (taskFilter) {
+        records = records.filter((record) => record.taskName.toLowerCase() === taskFilter);
+      }
+      if (statusFilter) {
+        records = records.filter(
+          (record) => String(record.status).toLowerCase() === statusFilter
+        );
+      }
+      const total = records.length;
+      sendJson(res, 200, { records: records.slice(0, limit), total, limit });
       return;
     }
 
@@ -1122,6 +1142,8 @@ function renderPage(): string {
     --accent: #7ec8fa; --ok: #34c759; --err: #ff5a5f; --run: #f5a623;
   }
   * { box-sizing: border-box; }
+  /* Фон задаём и на html: иначе при короткой странице снизу видна белая полоса. */
+  html { background: var(--bg2); }
   html, body { margin: 0; padding: 0; }
   body {
     font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
@@ -1138,6 +1160,9 @@ function renderPage(): string {
   }
   .wrap { position: relative; z-index: 1; max-width: 1740px; margin: 0 auto; padding: 28px 20px 60px; }
   .table-scroll { overflow-x: auto; }
+  /* Подсказка о горизонтальном скролле: на широких экранах таблица влезает целиком. */
+  .scroll-hint { display: none; margin-top: 6px; font-size: 11px; color: var(--muted); }
+  @media (max-width: 1000px) { .scroll-hint { display: block; } }
   header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
   h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: .2px; }
   .sub { margin-top: 5px; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); }
@@ -1181,7 +1206,8 @@ function renderPage(): string {
   .an-kpis { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
   .an-kpis b { color: var(--text); font-size: 14px; }
   .an-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding: 6px 0 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
-  .an-bar { flex: 1 1 0; min-width: 14px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; cursor: default; }
+  /* min-width: подпись даты "MM-DD" не наезжает на соседнюю; на узком экране график скроллится. */
+  .an-bar { flex: 1 1 0; min-width: 34px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; cursor: default; }
   .an-bar-fill { width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: .85; }
   .an-label { font-size: 9px; color: var(--muted); margin-top: 4px; white-space: nowrap; }
   .an-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 14px; }
@@ -1274,10 +1300,10 @@ function renderPage(): string {
     </div>
 
     <div class="ws-summary" id="ws-summary">📦 0 workspace · 0 задач</div>
-    <div class="ws-tabs" id="ws-tabs"></div>
+    <div class="ws-tabs" id="ws-tabs" role="group" aria-label="Фильтр задач по workspace"></div>
 
     <div class="table-scroll">
-    <table>
+    <table aria-label="Задачи планировщика">
       <thead>
         <tr>
           <th>Имя</th><th>Статус</th><th>Cron</th><th>📦 Workspace</th><th>Модель</th><th>Приоритет</th><th>Зависимости</th><th>Метрики</th><th>Действия</th>
@@ -1286,10 +1312,11 @@ function renderPage(): string {
       <tbody id="rows"><tr><td colspan="9" class="empty">Загрузка…</td></tr></tbody>
     </table>
     </div>
+    <div class="scroll-hint">↔ Таблица шире экрана — прокрутите её влево-вправо.</div>
 
     <div class="hist">
       <h2>📜 История выполнений</h2>
-      <div id="history"><div class="empty">Загрузка…</div></div>
+      <div id="history" aria-live="polite"><div class="empty">Загрузка…</div></div>
     </div>
 
     <div class="hist">
@@ -1316,7 +1343,7 @@ function renderPage(): string {
 
     <footer>Данные обновляются автоматически каждые 5 секунд · <span id="server-url">http://localhost:3782</span> · <span class="db-badge">БД: ✅ SQLite (WAL)</span></footer>
   </div>
-  <div id="toast"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 (function () {
@@ -1329,6 +1356,9 @@ function renderPage(): string {
   var activeWorkspace = 'all';
   /** Раскрытые родители матриц (имя → true). */
   var expandedMatrixParents = {};
+  /** История: последний загруженный список и режим «показать все». */
+  var lastHistory = [];
+  var historyExpanded = false;
 
   function esc(s) {
     var d = document.createElement('div');
@@ -1416,9 +1446,19 @@ function renderPage(): string {
     });
   }
 
-  function badge(status) {
+  function badge(status, task, historyMode) {
+    if (task && task.orphaned) {
+      return '<span class="badge unk" title="Определение есть в БД, но задачи нет в планировщике ОС">🧟 Нет в планировщике</span>';
+    }
+    if (task && task.paused) {
+      return '<span class="badge unk" title="Задача поставлена на паузу">⏸ Пауза</span>';
+    }
     if (status === 'running') return '<span class="badge run">🟡 Выполняется</span>';
-    if (status === 'success') return '<span class="badge okb">🟢 Готова</span>';
+    if (status === 'success') {
+      return historyMode
+        ? '<span class="badge okb">✅ Успех</span>'
+        : '<span class="badge okb">🟢 Готова</span>';
+    }
     if (status === 'error') return '<span class="badge errb">🔴 Ошибка</span>';
     if (status === 'partial') return '<span class="badge part">🟠 Частично</span>';
     return '<span class="badge unk">⚪ Неизвестно</span>';
@@ -1473,19 +1513,19 @@ function renderPage(): string {
   function renderHistory(records) {
     var box = document.getElementById('history');
     if (!box) return;
+    lastHistory = records || [];
     if (!records || records.length === 0) {
       box.innerHTML = '<div class="empty" style="padding:16px">Запусков пока нет.</div>';
       return;
     }
     var html = '';
-    var limit = Math.min(records.length, 10);
+    var limit = historyExpanded ? records.length : Math.min(records.length, 10);
     for (var i = 0; i < limit; i++) {
       var r = records[i];
-      var ok = r.status === 'success';
       html += '<div class="hist-row">' +
         '<span class="hist-time">' + esc(new Date(r.startedAt).toLocaleString('ru-RU')) + '</span>' +
         '<span class="hist-task">' + esc(r.taskName) + '</span>' +
-        '<span class="badge ' + (ok ? 'okb' : 'errb') + '">' + (ok ? '✅ Успех' : '❌ Ошибка') + '</span>' +
+        badge(r.status, null, true) +
         '<span class="metrics">' + (r.durationMs != null ? r.durationMs + ' мс' : '—') + '</span>' +
         (r.model ? '<span class="hist-model" title="Модель">🧠 ' + esc(r.model) + '</span>' : '') +
         (r.preFlightStatus && r.preFlightStatus !== 'skipped'
@@ -1498,6 +1538,11 @@ function renderPage(): string {
         (r.deniedTools && r.deniedTools.length ? '<span class="hist-hook" title="deniedTools: ' + esc(r.deniedTools.join(', ')) + '">🔒 denied=' + esc(r.deniedTools.join(',')) + '</span>' : '') +
         (r.error ? '<span class="metrics" title="' + esc(r.error) + '">⚠ ' + esc(String(r.error).slice(0, 80)) + '</span>' : '') +
         '</div>';
+    }
+    if (records.length > 10) {
+      html += '<div style="padding:10px 0 2px"><button class="btn" data-act="history-toggle">' +
+        (historyExpanded ? 'Свернуть историю' : 'Показать все (' + records.length + ')') +
+        '</button></div>';
     }
     box.innerHTML = html;
   }
@@ -1563,6 +1608,9 @@ function renderPage(): string {
         '</div>';
     }
     chart.innerHTML = bars || '<div class="empty" style="padding:10px">Нет данных за период.</div>';
+    // На узком экране график скроллится по горизонтали: показываем свежие дни,
+    // а не пустую левую часть окна.
+    chart.scrollLeft = chart.scrollWidth;
 
     var topRows = an.topByCost || [];
     if (topRows.length === 0) {
@@ -1810,7 +1858,7 @@ function renderPage(): string {
     }
     return '<tr' + (isClone ? ' class="clone-row"' : '') + '>' +
       '<td class="name" title="' + esc(t.name) + '">' + nameHtml + '</td>' +
-      '<td>' + badge(t.status) + matrixSummaryHtml(t) + '</td>' +
+      '<td>' + badge(t.status, t) + matrixSummaryHtml(t) + '</td>' +
       '<td class="cron">' + esc(cron) + sessionBadge + '</td>' +
       '<td>' + workspaceHtml(t) + '</td>' +
       '<td>' + modelHtml(t) + '</td>' +
@@ -1921,6 +1969,13 @@ function renderPage(): string {
       }
       btn.disabled = false;
       await loadAll();
+      return;
+    }
+
+    // История: развернуть/свернуть список (по умолчанию показываем последние 10).
+    if (act === 'history-toggle') {
+      historyExpanded = !historyExpanded;
+      renderHistory(lastHistory);
       return;
     }
 

@@ -2957,12 +2957,22 @@ export default Plugin.define({
         return { success: true, logs: result.logs };
       },
       get_history: async (input: unknown) => {
-        const { limit, taskName } = input as { limit?: number; taskName?: string };
+        // Контракт совпадает с агентским инструментом get_history:
+        // limit по умолчанию 20 (максимум 200), фильтры taskName и status.
+        const { limit, taskName, status } = input as {
+          limit?: number;
+          taskName?: string;
+          status?: string;
+        };
         const filter = taskName?.trim().toLowerCase();
-        const records = (await loadHistory()).filter(
-          (record) => !filter || record.taskName.toLowerCase() === filter
-        );
-        return { records: records.slice(0, limit ?? 10) };
+        const statusFilter = status?.trim().toLowerCase();
+        const max = Math.max(1, Math.min(Math.floor(limit ?? 20), 200));
+        const records = (await loadHistory())
+          .filter((record) => !filter || record.taskName.toLowerCase() === filter)
+          .filter(
+            (record) => !statusFilter || String(record.status).toLowerCase() === statusFilter
+          );
+        return { records: records.slice(0, max) };
       },
       get_metrics: async () => {
         return await loadMetrics();
@@ -4179,6 +4189,10 @@ async function collectTasksView() {
       schedule: def?.schedule ?? "",
       status,
       orphaned,
+      // Спринт 24 (фикс): явный признак паузы. Раньше GUI пытался вывести его
+      // из текстового статуса, но mapStatus() превращает "disabled" в "unknown",
+      // поэтому кнопка «возобновить» была недоступна.
+      paused: Boolean(t.paused),
       runsTotal: counts.total,
       runsSuccess: counts.success,
       runsError: counts.error,

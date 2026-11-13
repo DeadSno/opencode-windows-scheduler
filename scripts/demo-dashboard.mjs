@@ -181,8 +181,18 @@ function taskView(definition) {
 
 const deps = {
   getTasks: async () => listTasks().map(taskView),
-  runTask: async () => ({ alreadyRunning: false }),
-  deleteTask: async () => {},
+  // Демо-режим ничего не меняет в системе: действия честно отвечают ошибкой,
+  // вместо того чтобы имитировать успех (раньше кнопки «молча работали»).
+  runTask: async () => {
+    throw new Error("Демо-режим: запуск задач отключён. Запустите плагин в OpenCode.");
+  },
+  deleteTask: async () => {
+    throw new Error("Демо-режим: удаление задач отключено. Запустите плагин в OpenCode.");
+  },
+  cancelMatrix: async () => {
+    throw new Error("Демо-режим: отмена матрицы недоступна. Запустите плагин в OpenCode.");
+  },
+  cleanupMatrixOrphans: async () => [],
 };
 
 const started = await startDashboardServer(deps, { preferred: preferredPort, fallback: preferredPort + 1000 });

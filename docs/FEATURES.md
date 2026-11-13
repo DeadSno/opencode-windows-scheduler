@@ -61,6 +61,11 @@ wakes the wrapper every minute and `schedule-gate` decides whether the agent run
 `runAt` wins when both are present. `schedule` is ignored. One-shot tasks are
 registered natively (`schtasks /sc ONCE`, Linux `at`, macOS launchd cleanup
 agent), are not repeated after a plugin restart, and cannot be combined with a
+
+> **Windows locale note.** `schtasks /sd` only accepts dates in the format of the
+> current Windows locale. The plugin emits `DD.MM.YYYY`, which matches Russian
+> (and most European) locales. On a system with an English/US locale (`MM/DD/YYYY`)
+> `schtasks` rejects the date, so one-shot tasks are not available there.
 matrix.
 
 ### Session continuity

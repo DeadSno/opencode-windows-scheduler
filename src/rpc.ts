@@ -121,6 +121,10 @@ const TaskItem = {
     matrixParentId: { type: ["string", "null"] },
     /** true — задача является родителем матрицы. */
     isMatrixParent: { type: "boolean" },
+    /** true — задача поставлена на паузу (disabled в планировщике ОС). */
+    paused: { type: "boolean" },
+    /** true — определение есть в БД, но задачи нет в планировщике ОС. */
+    orphaned: { type: "boolean" },
     /** Агрегат по клонам для родителя (null — не матрица). */
     matrixSummary: {
       type: ["object", "null"],
@@ -283,9 +287,12 @@ const HistoryRecord = {
 const GetHistoryInput = {
   type: "object" as const,
   properties: {
+    /** Сколько последних записей вернуть (по умолчанию 20, максимум 200). */
     limit: { type: "number" },
     /** Фильтр по имени задачи (регистр не важен). */
     taskName: { type: "string" },
+    /** Фильтр по статусу: success | error | partial | running | timeout. */
+    status: { type: "string" },
   },
   additionalProperties: false,
 } as const;
