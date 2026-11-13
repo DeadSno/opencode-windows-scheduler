@@ -30,6 +30,21 @@ export interface CreateTaskOptions {
   model?: string;
   /** Приоритет задачи 0..10 (хранится в реестре для диагностики). */
   priority?: number;
+  /** IANA-таймзона задачи (например, "Europe/Moscow"). undefined — системная. */
+  timezone?: string;
+  /** Окно запуска «не раньше» (HH:MM, 24ч). Парно с notAfter. */
+  notBefore?: string;
+  /** Окно запуска «не позже» (HH:MM, 24ч). Парно с notBefore. */
+  notAfter?: string;
+  /** Аргументы schedule-gate для обёртки (расширенный cron / окно). */
+  scheduleGate?: {
+    cron?: string;
+    tz?: string;
+    notBefore?: string;
+    notAfter?: string;
+    /** Путь к defer-файлу для переноса из окна (lock-файл + .defer). */
+    deferFile?: string;
+  };
 }
 
 /** Результат немедленного запуска. */

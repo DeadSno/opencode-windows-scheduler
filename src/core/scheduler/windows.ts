@@ -4,6 +4,7 @@ import iconv from "iconv-lite";
 import type { ScheduledTaskInfo } from "../../types.js";
 import { TASK_FOLDER, TASK_FOLDER_NAME } from "../../types.js";
 import { buildScheduleFlags, convertCronToSchTasks } from "../cron-to-schtasks.js";
+import { needsPollMode } from "../schedule-v2.js";
 import type {
   CreateTaskOptions,
   RunTaskResult,
@@ -136,12 +137,23 @@ export class WindowsScheduler implements SchedulerBackend {
     const { name, command, schedule, triggerType } = options;
 
     let scheduleFlags: string[];
+
     if (triggerType && triggerType !== "cron") {
       // Файловый или MCP-триггер: однократный запуск в далёком будущем.
       // Активация — только вручную (runTask / файловый watcher / emit_event).
       scheduleFlags = ["/sc", "ONCE", "/sd", "31.12.2099", "/st", "00:00"];
     } else {
-      scheduleFlags = buildScheduleFlags(convertCronToSchTasks(schedule));
+      // Выражения, которые Windows не выражает нативно (список через запятую, L, #,
+      // именованные месяцы и т.д.), падают в минутный опрос + gate во враппере.
+      const tz = options.timezone?.trim() || null;
+      const poll = needsPollMode(schedule, tz);
+      if (poll) {
+        scheduleFlags = ["/sc", "MINUTE", "/mo", "1"];
+      } else {
+        // parseCron/валидация УЖЕ выполнена вызывающим кодом перед этим местом.
+        const native = convertCronToSchTasks(schedule);
+        scheduleFlags = buildScheduleFlags(native);
+      }
     }
 
     const fullName = taskFullName(name);
