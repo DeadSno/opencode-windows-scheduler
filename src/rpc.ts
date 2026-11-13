@@ -268,6 +268,8 @@ const GetHistoryInput = {
   type: "object" as const,
   properties: {
     limit: { type: "number" },
+    /** Фильтр по имени задачи (регистр не важен). */
+    taskName: { type: "string" },
   },
   additionalProperties: false,
 } as const;

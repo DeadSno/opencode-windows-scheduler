@@ -65,6 +65,12 @@ interface Job {
   name: string
   schedule: string
   status: JobStatus
+  /** Всего запусков именно этой задачи (не общий итог по всем). */
+  runsTotal?: number
+  /** Успешных запусков этой задачи. */
+  runsSuccess?: number
+  /** Неуспешных запусков этой задачи. */
+  runsError?: number
   nextRun?: string
   paused?: boolean
   retryCount?: number
@@ -243,6 +249,31 @@ export default Plugin.define({
     const [profilePinned, setProfilePinned] = createSignal(false)
     const [profilesOpen, setProfilesOpen] = createSignal(false)
     const [profileBusy, setProfileBusy] = createSignal(false)
+    // Собственный текстовый prompt: в Electron/WebView window.prompt не работает
+    // (возвращает null), из-за чего «+ Создать» в профилях молча ничего не делал.
+    const [promptOpen, setPromptOpen] = createSignal(false)
+    const [promptTitle, setPromptTitle] = createSignal("")
+    const [promptValue, setPromptValue] = createSignal("")
+    let promptResolve: ((value: string | null) => void) | null = null
+
+    /** Модальный ввод строки. Возвращает null при отмене/Escape/клике по фону. */
+    function askText(title: string, initial = ""): Promise<string | null> {
+      // Предыдущий незакрытый запрос отменяем, чтобы не потерять промис.
+      promptResolve?.(null)
+      return new Promise((resolve) => {
+        promptResolve = resolve
+        setPromptTitle(title)
+        setPromptValue(initial)
+        setPromptOpen(true)
+      })
+    }
+
+    function answerPrompt(value: string | null) {
+      const resolve = promptResolve
+      promptResolve = null
+      setPromptOpen(false)
+      resolve?.(value)
+    }
     const [logs, setLogs] = createSignal("")
     const [logsTask, setLogsTask] = createSignal<string | null>(null)
     const [busy, setBusy] = createSignal(false)
@@ -846,7 +877,7 @@ export default Plugin.define({
     }
 
     async function handleCreateProfile() {
-      const name = (window.prompt("Имя нового профиля (латиница, цифры, - и _)", "") ?? "").trim()
+      const name = ((await askText("Имя нового профиля (латиница, цифры, - и _)", "")) ?? "").trim()
       if (!name) return
       setProfileBusy(true)
       try {
@@ -909,7 +940,7 @@ export default Plugin.define({
     }
 
     async function handleEditWorkspaceEnv(workspace: Workspace) {
-      const envText = window.prompt(
+      const envText = await askText(
         "Env-переменные workspace, по одной в строке KEY=VALUE\n(пустое поле — очистить)",
         envToText(workspace.env)
       )
@@ -919,7 +950,7 @@ export default Plugin.define({
         ctx.toast.show({ title: "Неверный формат env", variant: "error", description: "Нужны строки KEY=VALUE, имя — латиница/цифры/_" })
         return
       }
-      const envFile = window.prompt(
+      const envFile = await askText(
         "Путь к .env-файлу workspace (необязательно, пусто — без файла)",
         workspace.envFile ?? ""
       )
@@ -946,9 +977,9 @@ export default Plugin.define({
     }
 
     async function handleAddWorkspace() {
-      const workspacePath = (window.prompt("Путь к git-репозиторию (workspace)", "") ?? "").trim()
+      const workspacePath = ((await askText("Путь к git-репозиторию (workspace)", "")) ?? "").trim()
       if (!workspacePath) return
-      const workspaceName = (window.prompt("Название workspace (необязательно)", "") ?? "").trim()
+      const workspaceName = ((await askText("Название workspace (необязательно)", "")) ?? "").trim()
       setWorkspaceBusy(true)
       try {
         const result = await rpc.add_workspace({
@@ -971,9 +1002,9 @@ export default Plugin.define({
     }
 
     async function handleEditWorkspace(workspace: Workspace) {
-      const nextPath = (window.prompt("Путь к git-репозиторию", workspace.path) ?? "").trim()
+      const nextPath = ((await askText("Путь к git-репозиторию", workspace.path)) ?? "").trim()
       if (!nextPath) return
-      const nextName = (window.prompt("Название workspace", workspace.name) ?? "").trim()
+      const nextName = ((await askText("Название workspace", workspace.name)) ?? "").trim()
       setWorkspaceBusy(true)
       try {
         const result = await rpc.update_workspace({
@@ -1094,7 +1125,7 @@ export default Plugin.define({
         return
       }
 
-      const templateName = (window.prompt("Название шаблона", "") ?? "").trim()
+      const templateName = ((await askText("Название шаблона", "")) ?? "").trim()
       if (!templateName) return
 
       try {
@@ -1188,6 +1219,9 @@ export default Plugin.define({
           name: t.name,
           schedule: t.schedule,
           status: (t.status as JobStatus) ?? "unknown",
+          runsTotal: typeof t.runsTotal === "number" ? t.runsTotal : 0,
+          runsSuccess: typeof t.runsSuccess === "number" ? t.runsSuccess : 0,
+          runsError: typeof t.runsError === "number" ? t.runsError : 0,
           nextRun: t.nextRun ?? undefined,
           paused: t.status?.toLowerCase().includes("disabled"),
           retryCount: t.retryCount ?? 0,
@@ -1239,7 +1273,7 @@ export default Plugin.define({
     async function fetchHistory(taskName: string) {
       setHistoryOpen(taskName)
       try {
-        const result = await rpc.get_history({ limit: 10 })
+        const result = await rpc.get_history({ limit: 10, taskName })
         setHistory(result.records ?? [])
       } catch (err: any) {
         console.error("RPC Error (get_history):", err)
@@ -1816,8 +1850,11 @@ export default Plugin.define({
                 </span>
               </div>
             )}
-            <div style="font-size:12px;color:#a0a0a6;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-              📊 Всего: {metrics().total} | ✅ {metrics().success} | ❌ {metrics().error}
+            <div
+              title="Запуски именно этой задачи (успешные / с ошибкой)"
+              style="font-size:12px;color:#a0a0a6;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+            >
+              📊 Всего: {job.runsTotal ?? 0} | ✅ {job.runsSuccess ?? 0} | ❌ {job.runsError ?? 0}
             </div>
             {(job.schedule || job.nextRun) && (
               <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#a0a0a6;margin-top:2px">
@@ -2057,6 +2094,12 @@ export default Plugin.define({
                 </h2>
                 <div style="margin-top:5px;font-size:11px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:#8e8e93">
                   Local AI CI/CD Orchestrator
+                </div>
+                <div
+                  title="Суммарные метрики по всем задачам (включая архивные записи метрик)"
+                  style="margin-top:4px;font-size:11px;color:#8e8e93"
+                >
+                  📊 Всего по всем задачам: {metrics().total} · ✅ {metrics().success} · ❌ {metrics().error}
                 </div>
               </div>
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -3449,6 +3492,70 @@ export default Plugin.define({
                 </div>
               }
             </div>
+
+            {/* Модальный текстовый ввод (замена неработающего в Electron window.prompt) */}
+            {promptOpen() && (
+              <div
+                style="position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px"
+                onClick={() => answerPrompt(null)}
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style="width:min(540px,100%);background:#1e1e1e;border:1px solid #444;border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 40px rgba(0,0,0,0.6)"
+                >
+                  <div style="font-size:13px;font-weight:600;color:#e0e0e0;white-space:pre-wrap">{promptTitle()}</div>
+                  {promptTitle().includes("KEY=VALUE") ? (
+                    <textarea
+                      autofocus
+                      rows={6}
+                      value={promptValue()}
+                      onInput={(e) => setPromptValue(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") answerPrompt(null)
+                        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                          e.preventDefault()
+                          answerPrompt(promptValue())
+                        }
+                        e.stopPropagation()
+                      }}
+                      style="width:100%;box-sizing:border-box;resize:vertical;padding:8px 10px;border-radius:8px;border:1px solid #3a3a3a;background:#141414;color:#e0e0e0;font-family:Menlo, Monaco, 'Courier New', monospace;font-size:12px;outline:none"
+                    />
+                  ) : (
+                    <input
+                      autofocus
+                      value={promptValue()}
+                      onInput={(e) => setPromptValue(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") answerPrompt(null)
+                        if (e.key === "Enter") {
+                          e.preventDefault()
+                          answerPrompt(promptValue())
+                        }
+                        e.stopPropagation()
+                      }}
+                      style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #3a3a3a;background:#141414;color:#e0e0e0;font-size:13px;outline:none"
+                    />
+                  )}
+                  <div style="display:flex;justify-content:flex-end;gap:8px">
+                    <button
+                      onClick={() => answerPrompt(null)}
+                      style="padding:6px 14px;border-radius:6px;border:1px solid #3a3a3a;background:#262626;color:#e0e0e0;font-size:12px;cursor:pointer"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      onClick={() => answerPrompt(promptValue())}
+                      style="padding:6px 14px;border-radius:6px;border:1px solid #0a84ff;background:#0a84ff;color:#fff;font-size:12px;font-weight:600;cursor:pointer"
+                    >
+                      ОК
+                    </button>
+                  </div>
+                  {promptTitle().includes("KEY=VALUE") && (
+                    <div style="font-size:11px;color:#8e8e93">Ctrl+Enter — сохранить, Escape — отмена</div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Панель логов */}
             {logsTask() && (

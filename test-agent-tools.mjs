@@ -16,6 +16,11 @@ const {
   updateTaskSchema,
   matrixControlSchema,
   matrixSchema,
+  manageSettingsSchema,
+  manageTemplatesSchema,
+  manageProfilesSchema,
+  transferTasksSchema,
+  emitEventSchema,
 } = await import("./dist/index.js");
 const { getTaskLogs } = await import("./dist/core/scheduler/logs.js");
 const { LOG_DIR, sanitizeName } = await import("./dist/types.js");
@@ -38,6 +43,18 @@ const minimal = scheduleTaskSchema.safeParse({
   prompt: "Собери отчёт",
 });
 check("schedule_task: минимальные поля валидны", minimal.success);
+
+const fileTrigger = scheduleTaskSchema.safeParse({
+  name: "watch-inbox",
+  schedule: "* * * * *",
+  prompt: "Обработай новый файл",
+  triggerType: "file",
+  watchPath: "C:/data/inbox",
+});
+check(
+  "schedule_task: watchPath для file-триггера принимается",
+  fileTrigger.success && fileTrigger.data.watchPath === "C:/data/inbox"
+);
 
 // 2. Новые поля 0.3 принимаются и сохраняются.
 const full = scheduleTaskSchema.safeParse({
@@ -157,7 +174,36 @@ check(
     rejects(matrixSchema, { workspaceIds: [1] })
 );
 
-// 12. Все 12 инструментов агента экспортируются в dist.
+// 11b. Новые инструменты полного паритета: схемы принимают корректные входы
+// и отвергают неизвестные действия/пустые события.
+check(
+  "manage_settings: частичное обновление валидно",
+  manageSettingsSchema.safeParse({ action: "update", maxConcurrent: 2 }).success &&
+    rejects(manageSettingsSchema, { action: "update", maxConcurrent: 0 })
+);
+check(
+  "manage_templates: save и delete валидны, неизвестное действие отвергается",
+  manageTemplatesSchema.safeParse({ action: "save", name: "t", prompt: "p" }).success &&
+    manageTemplatesSchema.safeParse({ action: "delete", id: "x" }).success &&
+    rejects(manageTemplatesSchema, { action: "rename" })
+);
+check(
+  "manage_profiles: create с портом валиден, порт вне диапазона отвергается",
+  manageProfilesSchema.safeParse({ action: "create", name: "p", port: 3782 }).success &&
+    rejects(manageProfilesSchema, { action: "create", name: "p", port: 70000 })
+);
+check(
+  "transfer_tasks: import требует строку данных при корректном action",
+  transferTasksSchema.safeParse({ action: "export" }).success &&
+    rejects(transferTasksSchema, { action: "import", data: 42 })
+);
+check(
+  "emit_event: пустое имя события отвергается",
+  !emitEventSchema.safeParse({ eventName: "" }).success &&
+    emitEventSchema.safeParse({ eventName: "deploy.done", payload: { ok: true } }).success
+);
+
+// 12. Все инструменты агента (полный функционал плагина) экспортируются в dist.
 const dist = fs.readFileSync(new URL("./dist/index.js", import.meta.url), "utf8");
 const toolNames = [
   "schedule_task",
@@ -172,10 +218,31 @@ const toolNames = [
   "dry_run",
   "manage_workspaces",
   "matrix_control",
+  "get_metrics",
+  "get_analytics",
+  "manage_settings",
+  "manage_templates",
+  "manage_profiles",
+  "transfer_tasks",
+  "send_notification",
+  "get_dashboard_info",
+  "cleanup_history",
+  "emit_event",
 ];
 check(
-  "все 12 инструментов агента присутствуют в сборке",
+  `все ${toolNames.length} инструментов агента присутствуют в сборке`,
   toolNames.every((name) => dist.includes(`name: "${name}"`))
+);
+
+// 12b. Ручной запуск не должен зависеть от cron: обёртка получает
+// одноразовый маркер --force-file, который снимает проверку расписания.
+const psWrapper = fs.readFileSync(
+  new URL("./dist/core/ps-wrapper.js", import.meta.url),
+  "utf8"
+);
+check(
+  "run_task_now: обёртка поддерживает --force-file и requestImmediateRun",
+  psWrapper.includes("--force-file") && psWrapper.includes("requestImmediateRun")
 );
 
 // 13. Описания инструментов переведены на английский.

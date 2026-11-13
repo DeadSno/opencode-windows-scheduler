@@ -6,7 +6,13 @@
  *   node dist/core/schedule-gate.js --cron "0 9 * * *" [--tz "Europe/Moscow"]
  *                                   [--not-before 22:00 --not-after 06:00]
  *                                   [--defer-file "C:\...\name.lock.defer"]
+ *                                   [--force-file "C:\...\name.lock.force"]
  *                                   [--now 2026-11-13T12:00:00.000Z]  (для тестов)
+ *
+ * --force-file — маркер ручного запуска (run_task_now, файловый триггер,
+ * catch-up). Если файл существует и моложе FORCE_TTL_MS, проверка cron/окна
+ * пропускается, а маркер удаляется. Протухший маркер не действует — иначе
+ * забытый файл однажды обошёл бы расписание.
  *
  * Коды выхода:
  *   0 — можно запускать (wrapper выполняет агента);
@@ -32,6 +38,9 @@ import {
 } from "./schedule-v2.js";
 
 const STALE_DEFER_MS = 25 * 60 * 60 * 1000;
+
+/** Сколько живёт маркер ручного запуска. */
+const FORCE_TTL_MS = 2 * 60 * 1000;
 
 function argValue(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
@@ -77,6 +86,27 @@ function releaseDefer(path: string): void {
   }
 }
 
+/**
+ * Проверяет и поглощает маркер ручного запуска.
+ *
+ * Возвращает true, если маркер свежий (значит, запуск инициирован вручную:
+ * инструментом, файловым триггером, MCP-событием или catch-up) — тогда гейт
+ * расписания не должен блокировать запуск. Маркер удаляется в любом случае.
+ *
+ * Возраст считается по реальным часам, а не по --now, иначе тестовый --now
+ * ломал бы проверку. Протухший маркер (например, задача не стартовала)
+ * просто удаляется и не влияет на расписание.
+ */
+function consumeForceMarker(path: string): boolean {
+  try {
+    const stat = fs.statSync(path);
+    fs.unlinkSync(path);
+    return Date.now() - stat.mtimeMs <= FORCE_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const cronExpr = argValue(args, "--cron");
@@ -84,12 +114,20 @@ async function main(): Promise<number> {
   const notBefore = argValue(args, "--not-before");
   const notAfter = argValue(args, "--not-after");
   const deferFile = argValue(args, "--defer-file");
+  const forceFile = argValue(args, "--force-file");
   const nowArg = argValue(args, "--now");
 
   const now = nowArg ? new Date(nowArg) : new Date();
   if (Number.isNaN(now.getTime())) {
     console.error(`[schedule-gate] Некорректное значение --now: ${nowArg}`);
     return 1;
+  }
+
+  // Ручной запуск (run_task_now, файловый триггер, MCP-событие, catch-up):
+  // маркер свежий — расписание и окно не проверяем.
+  if (forceFile && consumeForceMarker(forceFile)) {
+    console.error("[schedule-gate] Ручной запуск — проверка расписания пропущена.");
+    return 0;
   }
 
   // Невалидный timezone/окно — не блокируем задачу, логируем и продолжаем.

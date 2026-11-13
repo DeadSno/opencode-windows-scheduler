@@ -34,7 +34,7 @@ check("ARCHITECTURE: пути плагина %APPDATA% и XDG", arch.includes("%
 check("ARCHITECTURE: security-модель (localhost, metadata, plaintext)", arch.includes("no authentication") && arch.includes("metadata") && arch.includes("plain text"));
 
 const feat = fs.readFileSync(path.join(docs, "FEATURES.md"), "utf8");
-check("FEATURES: все 12 инструментов агента", ["schedule_task", "update_task", "pause_task", "resume_task", "get_history", "get_task_logs", "dry_run", "manage_workspaces", "matrix_control", "list_tasks", "delete_task", "run_task_now"].every((t) => feat.includes(t)));
+check("FEATURES: все 22 инструмента агента", ["schedule_task", "update_task", "pause_task", "resume_task", "get_history", "get_task_logs", "dry_run", "manage_workspaces", "matrix_control", "list_tasks", "delete_task", "run_task_now", "get_metrics", "get_analytics", "manage_settings", "manage_templates", "manage_profiles", "transfer_tasks", "send_notification", "get_dashboard_info", "cleanup_history", "emit_event"].every((t) => feat.includes(t)));
 check("FEATURES: матрица со всеми полями конфига", ["strategy", "failureMode", "concurrency", "overrides", "createAggregator", "aggregation"].every((k) => feat.includes(k)));
 check("FEATURES: статусы истории incl. partial", feat.includes("`partial`"));
 check("FEATURES: ограничения (limits) честно перечислены", feat.includes("No one-shot") && feat.toLowerCase().includes("metadata, not a sandbox") && feat.toLowerCase().includes("session continuity"));

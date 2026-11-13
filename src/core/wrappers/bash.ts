@@ -40,7 +40,11 @@ export interface BashWrapperOptions {
    * Гейт расписания (спринт 19): проверка cron в таймзоне задачи и окна
    * запуска выполняется до lock и запуска opencode.
    */
-  scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string };
+  scheduleGate?: ScheduleGateSpec & {
+    gateFile: string;
+    deferFile?: string;
+    forceFile?: string;
+  };
   /**
    * Спринт 21: путь к env-файлу workspace (пары KEY=VALUE). Значения
    * подгружаются перед запуском opencode и никогда не пишутся в лог.
@@ -110,6 +114,7 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     `SCHEDULE_NOT_BEFORE=${shellQuote(scheduleGate?.notBefore ?? "")}`,
     `SCHEDULE_NOT_AFTER=${shellQuote(scheduleGate?.notAfter ?? "")}`,
     `SCHEDULE_DEFER_FILE=${shellQuote(scheduleGate?.deferFile ?? "")}`,
+    `SCHEDULE_FORCE_FILE=${shellQuote(scheduleGate?.forceFile ?? "")}`,
     `ENV_FILE=${shellQuote(envFile ?? "")}`,
     "",
     "# cron запускает задачи с минимальным PATH — добавляем типовые каталоги.",
@@ -129,6 +134,7 @@ export function buildBashWrapperScript(options: BashWrapperOptions): string {
     '  [ -n "$SCHEDULE_NOT_BEFORE" ] && SCHED_GATE_ARGS+=(--not-before "$SCHEDULE_NOT_BEFORE")',
     '  [ -n "$SCHEDULE_NOT_AFTER" ] && SCHED_GATE_ARGS+=(--not-after "$SCHEDULE_NOT_AFTER")',
     '  [ -n "$SCHEDULE_DEFER_FILE" ] && SCHED_GATE_ARGS+=(--defer-file "$SCHEDULE_DEFER_FILE")',
+    '  [ -n "$SCHEDULE_FORCE_FILE" ] && SCHED_GATE_ARGS+=(--force-file "$SCHEDULE_FORCE_FILE")',
     '  if ! command -v node >/dev/null 2>&1; then',
     '    log "[scheduler] Гейт расписания пропущен: node не найден в PATH."',
     "  else",

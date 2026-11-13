@@ -64,7 +64,7 @@ npm run build && npm run build:gui
 
 ## Инструменты для агента
 
-Агенту доступен весь функционал — 12 инструментов: расписание, пайплайны, эксплуатация и наблюдаемость.
+Агенту доступен весь функционал — 22 инструмента: расписание, пайплайны, эксплуатация, аналитика и администрирование.
 
 | Инструмент | Аргументы | Что делает |
 |---|---|---|
@@ -79,7 +79,17 @@ npm run build && npm run build:gui
 | `get_task_logs` | `name`, `lines?` | Хвост лога запуска |
 | `dry_run` | `name?` | Симуляция пайплайна (или всех задач): порядок, DAG, fan-out, оценки |
 | `manage_workspaces` | `action`, `id?`, `name?`, `path?`, `color?` | Multi-repo workspace: список, добавление, изменение, удаление |
-| `matrix_control` | `action`, `name?` | Результаты матрицы, отмена клонов, очистка осиротевших задач |
+| `matrix_control` | `action`, `name?` | Результаты матрицы, отмена клонов, очистка осиротевших задач, предпросмотр |
+| `get_metrics` | — | Всего запусков, успехов и падений |
+| `get_analytics` | `days?`, `topLimit?` | Отчёт за период: запуски, успешность, длительность, токены, стоимость, топ задач |
+| `manage_settings` | `action`, `maxConcurrent?`, `winterMode?`, `notifications?`, `history?` | Чтение и изменение глобальных настроек (параллелизм, уведомления, retention) |
+| `manage_templates` | `action`, поля шаблона | Список, сохранение и удаление шаблонов задач |
+| `manage_profiles` | `action`, `name?`, `port?` | Список, создание, переключение и удаление профилей |
+| `transfer_tasks` | `action`, `data?` | Экспорт всех задач в JSON и импорт обратно |
+| `send_notification` | `action` (`test`/`digest`) | Проверка канала уведомлений или отправка дайджеста |
+| `get_dashboard_info` | — | Порт/URL дашборда, платформа, заголовок, активный профиль |
+| `cleanup_history` | `retentionDays?`, `maxRecords?` | Удаление старой истории по возрасту и/или лимиту записей |
+| `emit_event` | `eventName`, `payload?` | Запуск задач, подписанных на MCP-событие |
 
 `schedule_task` принимает и полную конфигурацию матрицы (`workspaceIds`, `strategy`, `failureMode`, `aggregation`, `concurrency`, `overrides`, `createAggregator`).
 

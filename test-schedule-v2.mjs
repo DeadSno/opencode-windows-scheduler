@@ -4,6 +4,9 @@
  * Чистые функции + CLI-шлюз; БД и планировщик ОС не нужны.
  */
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   buildScheduleGate,
   cronMatches,
@@ -166,6 +169,42 @@ check(
   "gate: некорректный --now → exit 1",
   runGate(["--now", "не-дата"]).status === 1
 );
+
+// --- 7. Ручной запуск: --force-file -------------------------------------
+// run_task_now не должен зависеть от того, совпал ли cron с текущей минутой.
+const forceDir = fs.mkdtempSync(path.join(os.tmpdir(), "gate-force-"));
+const freshMarker = path.join(forceDir, "fresh.force");
+fs.writeFileSync(freshMarker, new Date().toISOString());
+const forced = runGate([
+  "--cron",
+  "0 9 * * *",
+  "--tz",
+  "UTC",
+  "--now",
+  "2026-06-15T10:00:00Z",
+  "--force-file",
+  freshMarker,
+]);
+check("gate: свежий --force-file снимает проверку cron → exit 0", forced.status === 0);
+check("gate: force-маркер удалён после использования", !fs.existsSync(freshMarker));
+
+const staleMarker = path.join(forceDir, "stale.force");
+fs.writeFileSync(staleMarker, "stale");
+const staleTime = new Date(Date.now() - 10 * 60 * 1000);
+fs.utimesSync(staleMarker, staleTime, staleTime);
+const stale = runGate([
+  "--cron",
+  "0 9 * * *",
+  "--tz",
+  "UTC",
+  "--now",
+  "2026-06-15T10:00:00Z",
+  "--force-file",
+  staleMarker,
+]);
+check("gate: просроченный --force-file игнорируется → exit 3", stale.status === 3);
+check("gate: просроченный маркер тоже удаляется", !fs.existsSync(staleMarker));
+fs.rmSync(forceDir, { recursive: true, force: true });
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} OK`);

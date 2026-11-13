@@ -73,7 +73,7 @@ npm run build && npm run build:gui
 
 ## Agent tools
 
-The agent gets the full feature set — 12 tools covering scheduling, pipelines, operations and observability:
+The agent gets the full feature set — 22 tools covering scheduling, pipelines, operations, observability and administration:
 
 | Tool | Arguments | What it does |
 |---|---|---|
@@ -88,7 +88,17 @@ The agent gets the full feature set — 12 tools covering scheduling, pipelines,
 | `get_task_logs` | `name`, `lines?` | Tail of the run log |
 | `dry_run` | `name?` | Simulates a pipeline (or every task): order, DAG, matrix fan-out, estimates |
 | `manage_workspaces` | `action`, `id?`, `name?`, `path?`, `color?` | Multi-repo workspaces: list, add, update, delete |
-| `matrix_control` | `action`, `name?` | Matrix results, cancel pending clones, clean up orphans |
+| `matrix_control` | `action`, `name?` | Matrix results, cancel pending clones, clean up orphans, preview clones |
+| `get_metrics` | — | Aggregate runs, successes and failures |
+| `get_analytics` | `days?`, `topLimit?` | Period report: counts, success rate, duration, tokens, cost, top tasks |
+| `manage_settings` | `action`, `maxConcurrent?`, `winterMode?`, `notifications?`, `history?` | Read/update global settings (concurrency, notifications, retention) |
+| `manage_templates` | `action`, template fields | List, save or delete reusable task templates |
+| `manage_profiles` | `action`, `name?`, `port?` | List, create, switch or delete isolated profiles |
+| `transfer_tasks` | `action`, `data?` | Export all tasks to JSON or import them back |
+| `send_notification` | `action` (`test`/`digest`) | Test the notification channel or send the digest |
+| `get_dashboard_info` | — | Dashboard port/URL, platform, title, active profile |
+| `cleanup_history` | `retentionDays?`, `maxRecords?` | Delete old history by age and/or record cap |
+| `emit_event` | `eventName`, `payload?` | Start tasks subscribed to an MCP event |
 
 `schedule_task` also accepts the full matrix configuration (`workspaceIds`, `strategy`, `failureMode`, `aggregation`, `concurrency`, `overrides`, `createAggregator`).
 

@@ -8,7 +8,7 @@ import path from "node:path";
 import { LockManager } from "./core/lock.js";
 import { LOCK_DIR, LOG_DIR, PLUGIN_DIR, sanitizeName } from "./types.js";
 import { parseCron, buildScheduleGate, isValidIanaTimeZone, validateLaunchWindow, prevRun } from "./core/schedule-v2.js";
-import { ensureWrapper, writePromptFile, writeWrapperCmd, lockFilePath } from "./core/ps-wrapper.js";
+import { ensureWrapper, writePromptFile, writeWrapperCmd, lockFilePath, requestImmediateRun } from "./core/ps-wrapper.js";
 import { getSchedulerBackend } from "./core/scheduler/index.js";
 import { SCHEDULER_SKILL_ID, loadSchedulerSkill } from "./skill.js";
 import { getTaskLogs } from "./core/scheduler/logs.js";
@@ -33,6 +33,7 @@ import type { HistorySettings, NotificationSettings } from "./settings.js";
 import { runHistoryRetention, maybeRunHistoryRetention } from "./core/retention.js";
 import { buildAnalytics } from "./core/analytics.js";
 import { getHistory, listRunningRecords } from "./db/history-repo.js";
+import { getAllMetrics } from "./db/metrics-repo.js";
 import {
   findStuckMatrixClones,
   maybeSendDigest,
@@ -275,6 +276,12 @@ export const scheduleTaskSchema = z.object({
     .describe(
       "MCP event trigger: server, event name and an optional filter (key=value or regex)."
     ),
+  watchPath: z
+    .string()
+    .optional()
+    .describe(
+      "File or directory to watch when triggerType is \"file\". Can be set here or later via update_task."
+    ),
   workingDirectory: z
     .string()
     .optional()
@@ -480,14 +487,151 @@ const manageWorkspacesSchema = z.object({
 
 export const matrixControlSchema = z.object({
   action: z
-    .enum(["results", "cancel", "cleanup"])
+    .enum(["results", "cancel", "cleanup", "preview"])
     .describe(
-      "results — aggregate status of a matrix; cancel — cancel pending clones; cleanup — delete orphaned clones and aggregators."
+      "results — aggregate status of a matrix; cancel — cancel pending clones; cleanup — delete orphaned clones and aggregators; preview — dry-expand a matrix config into clone names without creating anything."
     ),
   name: z
     .string()
     .optional()
-    .describe("Matrix parent name (required for results and cancel)."),
+    .describe("Matrix parent name (required for results and cancel; used as clone prefix for preview)."),
+  workspaceIds: z
+    .array(z.string())
+    .optional()
+    .describe("Preview only: workspace ids to fan out to (omit for every workspace)."),
+  strategy: z
+    .enum(["parallel", "sequential"])
+    .optional()
+    .describe("Preview only: clone execution strategy."),
+  failureMode: z
+    .enum(["continue", "stop"])
+    .optional()
+    .describe("Preview only: what to do when one clone fails."),
+  aggregation: z
+    .enum(["summary", "per-task"])
+    .optional()
+    .describe("Preview only: how clone results are aggregated."),
+});
+
+/** get_metrics — общая статистика запусков. */
+export const getMetricsSchema = z.object({});
+
+/** get_analytics — аналитика за период. */
+export const getAnalyticsSchema = z.object({
+  days: z
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .optional()
+    .describe("Analysis window in days (default 14)."),
+  topLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe("How many top tasks to include (default 10)."),
+});
+
+/** manage_settings — глобальные настройки планировщика. */
+export const manageSettingsSchema = z.object({
+  action: z
+    .enum(["get", "update"])
+    .describe("get — current settings; update — merge the provided fields and save."),
+  maxConcurrent: z
+    .number()
+    .int()
+    .min(1)
+    .max(16)
+    .optional()
+    .describe("How many task runs may execute at the same time."),
+  winterMode: z
+    .boolean()
+    .optional()
+    .describe("Winter mode: gentler scheduling of deferred runs."),
+  notifications: z
+    .any()
+    .optional()
+    .describe("Notification settings patch (enabled, onlyOnError, webhook, templates, filters, matrix, digest)."),
+  history: z
+    .object({
+      retentionDays: z.number().int().min(1).max(3650).optional(),
+      maxRecords: z.number().int().min(100).max(1000000).optional(),
+    })
+    .optional()
+    .describe("History retention policy."),
+});
+
+/** manage_templates — пользовательские шаблоны задач. */
+export const manageTemplatesSchema = z.object({
+  action: z
+    .enum(["list", "save", "delete"])
+    .describe("list — all templates; save — create or update (id omitted = create); delete — remove by id."),
+  id: z.string().optional().describe("Template id for update/delete."),
+  name: z.string().optional().describe("Template name."),
+  prompt: z.string().optional().describe("Prompt text stored in the template."),
+  schedule: z.string().optional().describe("Cron expression."),
+  timeoutSeconds: z.number().int().positive().optional(),
+  model: z.string().optional(),
+  priority: z.number().int().min(0).max(10).optional(),
+  retryCount: z.number().int().min(0).optional(),
+  retryDelay: z.number().int().min(0).optional(),
+  qualityGate: z.string().optional(),
+  beforeScript: z.string().optional(),
+  afterScript: z.string().optional(),
+  nextTaskOnSuccess: z.string().optional(),
+  nextTaskOnError: z.string().optional(),
+  dependsOn: z.array(z.string()).optional(),
+  triggerType: z.enum(["cron", "file", "mcp-event"]).optional(),
+  mcpEvent: z
+    .object({
+      server: z.string(),
+      event: z.string(),
+      filter: z.string().optional(),
+    })
+    .optional(),
+  watchPath: z.string().optional(),
+  workingDirectory: z.string().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  deniedTools: z.array(z.string()).optional(),
+});
+
+/** manage_profiles — изолированные профили планировщика. */
+export const manageProfilesSchema = z.object({
+  action: z
+    .enum(["list", "create", "switch", "delete"])
+    .describe("list — profiles; create — new profile; switch — make active (restart required); delete — remove profile data."),
+  name: z.string().optional().describe("Profile name (required for create/switch/delete)."),
+  port: z.number().int().min(1).max(65535).optional().describe("Dashboard port for a new profile."),
+});
+
+/** transfer_tasks — экспорт и импорт задач. */
+export const transferTasksSchema = z.object({
+  action: z.enum(["export", "import"]).describe("export — JSON snapshot; import — recreate tasks from a snapshot."),
+  data: z.string().optional().describe("JSON produced by export (required for import)."),
+});
+
+/** send_notification — проверка уведомлений и дайджест. */
+export const sendNotificationSchema = z.object({
+  action: z
+    .enum(["test", "digest"])
+    .describe("test — send a test message through the configured channel; digest — send the digest now."),
+});
+
+/** get_dashboard_info — сведения о панели управления. */
+export const getDashboardInfoSchema = z.object({});
+
+/** cleanup_history — удаление старой истории. */
+export const cleanupHistorySchema = z.object({
+  retentionDays: z.number().int().min(1).max(3650).optional().describe("Override the retention window."),
+  maxRecords: z.number().int().min(100).max(1000000).optional().describe("Override the record cap."),
+});
+
+/** emit_event — запуск задач по MCP-событию. */
+export const emitEventSchema = z.object({
+  eventName: z.string().min(1).describe("Event name, for example 'deploy.finished'."),
+  payload: z.any().optional().describe("Event payload passed to trigger filters."),
 });
 
 type ScheduleArgs = z.infer<typeof scheduleTaskSchema>;
@@ -502,6 +646,16 @@ type TaskLogsArgs = z.infer<typeof getTaskLogsSchema>;
 type DryRunArgs = z.infer<typeof dryRunSchema>;
 type WorkspacesArgs = z.infer<typeof manageWorkspacesSchema>;
 type MatrixControlArgs = z.infer<typeof matrixControlSchema>;
+type MetricsArgs = z.infer<typeof getMetricsSchema>;
+type AnalyticsArgs = z.infer<typeof getAnalyticsSchema>;
+type SettingsArgs = z.infer<typeof manageSettingsSchema>;
+type TemplatesArgs = z.infer<typeof manageTemplatesSchema>;
+type ProfilesArgs = z.infer<typeof manageProfilesSchema>;
+type TransferArgs = z.infer<typeof transferTasksSchema>;
+type NotificationArgs = z.infer<typeof sendNotificationSchema>;
+type DashboardInfoArgs = z.infer<typeof getDashboardInfoSchema>;
+type CleanupHistoryArgs = z.infer<typeof cleanupHistorySchema>;
+type EmitEventArgs = z.infer<typeof emitEventSchema>;
 
 /**
  * Директория проекта, в которой запущен OpenCode. Используется как рабочая
@@ -550,6 +704,7 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
     nextTaskOnError,
     triggerType,
     mcpEvent,
+    watchPath,
     workingDirectory,
     workspaceId,
     allowedTools,
@@ -573,7 +728,7 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
       nextTaskOnSuccess,
       nextTaskOnError,
       triggerType,
-      undefined,
+      watchPath,
       dependsOn,
       model,
       priority,
@@ -598,6 +753,10 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
       }),
     };
   }
+
+  // Новый файловый триггер должен начать работать сразу, без перезапуска
+  // OpenCode: пересобираем набор watcher-ов после создания задачи.
+  await refreshFileTriggers();
 
   const workspace = workspaceId ? getWorkspace(workspaceId) : undefined;
   const effectiveWorkdir =
@@ -794,13 +953,28 @@ async function cleanupOrphanedMatrixTasks(): Promise<string[]> {
  */
 async function deleteTaskWithFamily(
   name: string
-): Promise<{ removed: string[] }> {
+): Promise<{ removed: string[]; existed: boolean }> {
   const trimmed = name.trim();
   const guard = getMatrixDeletionGuard(trimmed);
   if (guard) throw new Error(guard);
 
   const plan = planMatrixFamilyDelete(trimmed);
   const removed: string[] = [];
+
+  // Отличаем реальное удаление от «удаления пустоты»: раньше инструмент
+  // отвечал success даже на имя, которого никогда не существовало.
+  let existed = Boolean(getTask(trimmed));
+  if (!existed) {
+    try {
+      const osTasks = await scheduler.listTasks();
+      existed = osTasks.some(
+        (task) => task.taskName.toLowerCase() === trimmed.toLowerCase()
+      );
+    } catch {
+      // ОС-планировщик недоступен — довольствуемся данными БД.
+    }
+  }
+  if (plan && plan.children.length > 0) existed = true;
 
   if (plan) {
     for (const child of plan.children) {
@@ -825,7 +999,7 @@ async function deleteTaskWithFamily(
     // Определения могло уже не быть — задача всё равно удалена из ОС.
   }
 
-  return { removed };
+  return { removed, existed };
 }
 
 /** delete_task — удаление задачи по имени (/f) */
@@ -833,7 +1007,17 @@ const deleteTaskExecute = wrapExecute<DeleteArgs>(async (args) => {
   const { name } = args;
 
   try {
-    const { removed } = await deleteTaskWithFamily(name);
+    const { removed, existed } = await deleteTaskWithFamily(name);
+    // Убираем watcher удалённой задачи, не дожидаясь перезапуска плагина.
+    await refreshFileTriggers();
+    if (!existed && removed.length === 0) {
+      return {
+        content: JSON.stringify({
+          success: false,
+          error: `Задача "${name}" не найдена — удалять нечего.`,
+        }),
+      };
+    }
     return {
       content: JSON.stringify({
         success: true,
@@ -859,7 +1043,7 @@ const runTaskNowExecute = wrapExecute<RunNowArgs>(async (args) => {
 
   let alreadyRunning = false;
   try {
-    const result = await scheduler.runTask(name);
+    const result = await runTaskEntry(name);
     alreadyRunning = result.alreadyRunning;
   } catch (err: any) {
     return {
@@ -1002,6 +1186,10 @@ async function updateTaskFromInput(
     if (matrixWas && !matrixNext) {
       await removeMatrixChildrenFromScheduler(name);
     }
+
+    // Пересоздание могло изменить triggerType/watchPath — сразу
+    // пересобираем набор файловых watcher-ов.
+    await refreshFileTriggers();
 
     return { success: true, message: `Задача "${name}" обновлена.` };
   } catch (err: any) {
@@ -1423,8 +1611,32 @@ const manageWorkspacesExecute = wrapExecute<WorkspacesArgs>(async (args) => {
   }
 });
 
-/** matrix_control — результаты, отмена и очистка матриц. */
+/** matrix_control — результаты, отмена, очистка и предпросмотр матриц. */
 const matrixControlExecute = wrapExecute<MatrixControlArgs>(async (args) => {
+  if (args.action === "preview") {
+    const clones = expandMatrixTask({
+      name: (args.name ?? "").trim() || "task",
+      schedule: "* * * * *",
+      prompt: "preview",
+      matrix: {
+        workspaceIds: Array.isArray(args.workspaceIds) ? args.workspaceIds : [],
+        strategy: args.strategy,
+        failureMode: args.failureMode,
+        aggregation: args.aggregation,
+      },
+    } as any);
+    return {
+      content: JSON.stringify({
+        success: true,
+        clones: clones.map((clone) => ({
+          name: clone.name,
+          workspaceId: clone.workspaceId ?? "",
+          workspaceName: clone.workspaceId ? getWorkspace(clone.workspaceId)?.name ?? null : null,
+        })),
+      }),
+    };
+  }
+
   if (args.action === "cleanup") {
     const removed = await cleanupOrphanedMatrixTasks();
     return {
@@ -1481,6 +1693,334 @@ const matrixControlExecute = wrapExecute<MatrixControlArgs>(async (args) => {
     };
   }
 });
+
+/** get_metrics — суммарная статистика запусков. */
+const getMetricsExecute = wrapExecute<MetricsArgs>(async () => {
+  const metrics = await loadMetrics();
+  return { content: JSON.stringify({ success: true, metrics }) };
+});
+
+/** get_analytics — аналитика запусков и стоимости за период. */
+const getAnalyticsExecute = wrapExecute<AnalyticsArgs>(async (args) => {
+  const windowDays = Math.min(365, Math.max(1, Math.floor(Number(args.days) || 14)));
+  const records = getHistory(null, 20000);
+  const definitions = await loadTaskDefinitions();
+  const report = buildAnalytics(records, {
+    days: windowDays,
+    topLimit: Math.max(1, Math.floor(Number(args.topLimit) || 10)),
+    tasks: definitions.map((definition) => ({
+      name: definition.name,
+      matrixParentId: definition.matrixParentId,
+    })),
+  });
+  return { content: JSON.stringify({ success: true, report }) };
+});
+
+/** manage_settings — чтение и изменение глобальных настроек. */
+const manageSettingsExecute = wrapExecute<SettingsArgs>(async (args) => {
+  const current = await loadSettings();
+  if (args.action === "get") {
+    return { content: JSON.stringify({ success: true, settings: current }) };
+  }
+
+  if (
+    args.maxConcurrent === undefined &&
+    args.winterMode === undefined &&
+    args.notifications === undefined &&
+    args.history === undefined
+  ) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: "Для action=update передайте хотя бы одно поле: maxConcurrent, winterMode, notifications или history.",
+        settings: current,
+      }),
+    };
+  }
+
+  const settings = await saveSettings({
+    maxConcurrent: args.maxConcurrent,
+    winterMode: args.winterMode,
+    notifications: args.notifications as NotificationSettings | undefined,
+    history: args.history as HistorySettings | undefined,
+  });
+  return { content: JSON.stringify({ success: true, settings }) };
+});
+
+/** manage_templates — список, сохранение и удаление шаблонов задач. */
+const manageTemplatesExecute = wrapExecute<TemplatesArgs>(async (args) => {
+  if (args.action === "list") {
+    return { content: JSON.stringify({ success: true, templates: await loadTemplates() }) };
+  }
+
+  if (args.action === "delete") {
+    const id = args.id?.trim();
+    if (!id) {
+      return { content: JSON.stringify({ success: false, error: "Для action=delete нужен id шаблона." }) };
+    }
+    const before = await loadTemplates();
+    const existed = before.some((template) => template.id === id);
+    await deleteTemplate(id);
+    return {
+      content: JSON.stringify({
+        success: existed,
+        message: existed ? `Шаблон ${id} удалён.` : `Шаблон ${id} не найден.`,
+      }),
+    };
+  }
+
+  const { action, ...fields } = args;
+  if (!fields.name?.trim() || !fields.prompt?.trim()) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: "Для action=save нужны непустые name и prompt.",
+      }),
+    };
+  }
+  const template = await saveTemplate(fields as Omit<TaskTemplate, "id"> & { id?: string });
+  return { content: JSON.stringify({ success: true, template }) };
+});
+
+/** manage_profiles — список, создание, переключение и удаление профилей. */
+const manageProfilesExecute = wrapExecute<ProfilesArgs>(async (args) => {
+  if (args.action === "list") {
+    return {
+      content: JSON.stringify({
+        success: true,
+        current: getProfileName(),
+        pinnedByEnv: isProfilePinnedByEnv(),
+        profiles: listProfiles(),
+      }),
+    };
+  }
+
+  const name = args.name?.trim();
+  if (!name) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: `Для action=${args.action} нужно имя профиля.`,
+      }),
+    };
+  }
+
+  if (args.action === "create") {
+    const meta = createProfile(name, args.port);
+    const profile = listProfiles().find((item) => item.name === meta.name);
+    return {
+      content: JSON.stringify({
+        success: true,
+        message: `Профиль "${meta.name}" создан (порт дашборда ${meta.port}).`,
+        profile: profile ?? {
+          name: meta.name,
+          dir: getProfileDir(meta.name),
+          port: meta.port,
+          isDefault: meta.name === DEFAULT_PROFILE,
+          active: meta.name === getProfileName(),
+        },
+      }),
+    };
+  }
+
+  if (args.action === "switch") {
+    setActiveProfile(name);
+    const current = getProfileName();
+    return {
+      content: JSON.stringify({
+        success: true,
+        current,
+        restartRequired: true,
+        message: isProfilePinnedByEnv()
+          ? `Профиль задан переменной OPENCODE_SCHEDULER_PROFILE=${current}. Перезапустите OpenCode.`
+          : `Активный профиль: ${sanitizeProfileName(name)}. Перезапустите OpenCode, чтобы применить изменения.`,
+      }),
+    };
+  }
+
+  const removed = deleteProfile(name);
+  return {
+    content: JSON.stringify({
+      success: removed,
+      message: removed
+        ? `Профиль "${sanitizeProfileName(name)}" удалён вместе с его БД и настройками.`
+        : "Профиль не найден.",
+    }),
+  };
+});
+
+/** transfer_tasks — экспорт и импорт задач. */
+const transferTasksExecute = wrapExecute<TransferArgs>(async (args) => {
+  if (args.action === "export") {
+    const tasks = await scheduler.listTasks();
+    const { data, count } = await buildExportJson(
+      tasks.map((task) => ({ ...task, name: task.taskName || "" }))
+    );
+    return { content: JSON.stringify({ success: true, data, count }) };
+  }
+
+  if (!args.data) {
+    return { content: JSON.stringify({ success: false, error: "Для action=import нужны данные экспорта." }) };
+  }
+  const parsed = parseImportJson(args.data);
+  if (parsed.tasks.length === 0) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: "В данных нет задач для импорта.",
+        errors: parsed.errors,
+      }),
+    };
+  }
+
+  const imported: string[] = [];
+  const errors: string[] = [...parsed.errors];
+  for (const def of parsed.tasks) {
+    try {
+      await schedulerCreateTask(
+        def.name,
+        def.schedule,
+        def.prompt,
+        def.timeoutSeconds,
+        def.workingDirectory ?? def.workdir,
+        def.retryCount,
+        def.retryDelay,
+        def.qualityGate,
+        def.nextTaskOnSuccess,
+        def.nextTaskOnError,
+        def.triggerType,
+        def.watchPath,
+        def.dependsOn,
+        def.model,
+        def.priority,
+        def.beforeScript,
+        def.afterScript,
+        def.mcpEvent,
+        def.workspaceId,
+        def.allowedTools,
+        def.deniedTools,
+        def.matrix,
+        def.matrixParentId,
+        "create",
+        def.timezone,
+        def.notBefore,
+        def.notAfter,
+        def.pausedUntil
+      );
+      await saveTaskDefinition(def);
+      imported.push(def.name);
+    } catch (err: any) {
+      errors.push(`${def.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  await refreshFileTriggers();
+  return {
+    content: JSON.stringify({ success: errors.length === 0, imported, errors }),
+  };
+});
+
+/** send_notification — тестовое уведомление или дайджест. */
+const sendNotificationExecute = wrapExecute<NotificationArgs>(async (args) => {
+  const result =
+    args.action === "test"
+      ? await sendTestNotification()
+      : await sendDigestNow({ updateLastSentAt: false });
+  return { content: JSON.stringify(result) };
+});
+
+/** get_dashboard_info — порт дашборда, платформа и активный профиль. */
+const getDashboardInfoExecute = wrapExecute<DashboardInfoArgs>(async () => {
+  const port = getDashboardPort();
+  return {
+    content: JSON.stringify({
+      success: true,
+      port,
+      url: port ? `http://127.0.0.1:${port}` : null,
+      platform: scheduler.platform,
+      title: scheduler.title,
+      profile: getProfileName(),
+    }),
+  };
+});
+
+/** cleanup_history — удаление старых записей истории. */
+const cleanupHistoryExecute = wrapExecute<CleanupHistoryArgs>(async (args) => {
+  const report = await runHistoryRetention({
+    retentionDays: args.retentionDays,
+    maxRecords: args.maxRecords,
+  });
+  return {
+    content: JSON.stringify({
+      success: true,
+      message: report.skipped
+        ? report.skipped
+        : `Удалено ${report.deleted} записей (по возрасту: ${report.deletedByAge}, по лимиту: ${report.deletedByCount}), осталось ${report.kept}.`,
+      report,
+    }),
+  };
+});
+
+/** emit_event — запуск задач, подписанных на MCP-событие. */
+const emitEventExecute = wrapExecute<EmitEventArgs>(async (args) => {
+  const eventName = args.eventName?.trim();
+  if (!eventName) {
+    return { content: JSON.stringify({ success: false, error: "Не передано имя события." }) };
+  }
+  const payload = args.payload ?? {};
+  const definitions = await loadTaskDefinitions();
+  const matched = definitions
+    .filter(
+      (def) =>
+        def.triggerType === "mcp-event" &&
+        def.mcpEvent?.event?.toLowerCase() === eventName.toLowerCase() &&
+        matchesEventFilter(def.mcpEvent?.filter, payload)
+    )
+    .sort(
+      (a, b) =>
+        (normalizePriority(b.priority) ?? 0) - (normalizePriority(a.priority) ?? 0)
+    );
+
+  const triggered: string[] = [];
+  for (const def of matched) {
+    try {
+      await runTaskEntry(def.name);
+      triggered.push(def.name);
+    } catch (err: any) {
+      console.error(`[windows-scheduler] emit_event: не удалось запустить ${def.name}:`, err);
+    }
+  }
+  return {
+    content: JSON.stringify({
+      success: true,
+      message:
+        triggered.length > 0
+          ? `Запущено задач: ${triggered.length}.`
+          : `Нет задач, подписанных на событие "${eventName}".`,
+      triggered,
+    }),
+  };
+});
+
+/**
+ * Менеджер файловых триггеров живёт на уровне модуля, чтобы его можно было
+ * обновлять после создания/изменения/удаления задачи. Раньше refresh()
+ * вызывался только при старте плагина, из-за чего новые watchPath начинали
+ * работать лишь после перезапуска OpenCode.
+ */
+let fileWatcherManager: FileWatchManager | null = null;
+
+async function refreshFileTriggers(): Promise<void> {
+  if (!fileWatcherManager) return;
+  try {
+    await fileWatcherManager.refresh();
+  } catch (err: any) {
+    console.error(
+      `[windows-scheduler] Не удалось обновить файловые триггеры: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
+}
 
 export default Plugin.define({
   id: "opencode-windows-scheduler",
@@ -1609,7 +2149,7 @@ export default Plugin.define({
 
           // Запускаем задачу и пишем в лог.
           try {
-            await scheduler.runTask(def.name);
+            await runTaskEntry(def.name);
             console.log(
               `[windows-scheduler] Запущено восстановление пропущенной задачи "${def.name}" (последний срабатывал ~${Math.round(ageMs / 1000)} с назад).`
             );
@@ -1630,9 +2170,9 @@ export default Plugin.define({
 
     // Файловые триггеры (File Watchers): задачи с triggerType === "file"
     // запускаются при изменении watchPath через chokidar (с дебаунсом).
-    const fileWatcherManager = new FileWatchManager(async (taskName) => {
+    fileWatcherManager = new FileWatchManager(async (taskName) => {
       try {
-        await scheduler.runTask(taskName);
+        await runTaskEntry(taskName);
         console.log(
           `[windows-scheduler] Запуск задачи "${taskName}" по изменению отслеживаемого файла.`
         );
@@ -1644,7 +2184,7 @@ export default Plugin.define({
         );
       }
     });
-    void fileWatcherManager.refresh();
+    void refreshFileTriggers();
 
     const registration = await ctx.tool.transform((editor) => {
       // editor.add регистрирует новые инструменты плагина с codemode: true,
@@ -1760,9 +2300,99 @@ export default Plugin.define({
         name: "matrix_control",
         input: matrixControlSchema,
         description:
-          "Matrix lifecycle: results (aggregate status/counters of a matrix), cancel (cancel pending clones, stop running ones) or cleanup (delete orphaned clones and aggregators whose parent is gone).",
+          "Matrix lifecycle: results (aggregate status/counters of a matrix), cancel (cancel pending clones, stop running ones), cleanup (delete orphaned clones and aggregators whose parent is gone) or preview (expand a matrix config into clone names without creating anything).",
         options: { codemode: true },
         execute: matrixControlExecute as any,
+      });
+
+      editor.add({
+        name: "get_metrics",
+        input: getMetricsSchema,
+        description:
+          "Returns aggregate run metrics: total runs, successes and failures across all tasks.",
+        options: { codemode: true },
+        execute: getMetricsExecute as any,
+      });
+
+      editor.add({
+        name: "get_analytics",
+        input: getAnalyticsSchema,
+        description:
+          "Returns an analytics report for a period: run counts, success rate, duration, tokens and cost, plus top tasks.",
+        options: { codemode: true },
+        execute: getAnalyticsExecute as any,
+      });
+
+      editor.add({
+        name: "manage_settings",
+        input: manageSettingsSchema,
+        description:
+          "Reads or updates global scheduler settings: maxConcurrent, winterMode, notifications (webhook, filters, matrix alerts, digest) and history retention. Updates are merged into the current settings.",
+        options: { codemode: true },
+        execute: manageSettingsExecute as any,
+      });
+
+      editor.add({
+        name: "manage_templates",
+        input: manageTemplatesSchema,
+        description:
+          "Lists, saves or deletes reusable task templates (prompt, schedule, retries, Quality Gate, chains, triggers, tool restrictions).",
+        options: { codemode: true },
+        execute: manageTemplatesExecute as any,
+      });
+
+      editor.add({
+        name: "manage_profiles",
+        input: manageProfilesSchema,
+        description:
+          "Lists, creates, switches or deletes isolated scheduler profiles (separate database, settings and dashboard port). Switching requires an OpenCode restart.",
+        options: { codemode: true },
+        execute: manageProfilesExecute as any,
+      });
+
+      editor.add({
+        name: "transfer_tasks",
+        input: transferTasksSchema,
+        description:
+          "Exports all tasks as a portable JSON snapshot or imports tasks from such a snapshot, recreating them in the OS scheduler.",
+        options: { codemode: true },
+        execute: transferTasksExecute as any,
+      });
+
+      editor.add({
+        name: "send_notification",
+        input: sendNotificationSchema,
+        description:
+          "Sends a test notification through the configured channel or sends the digest immediately.",
+        options: { codemode: true },
+        execute: sendNotificationExecute as any,
+      });
+
+      editor.add({
+        name: "get_dashboard_info",
+        input: getDashboardInfoSchema,
+        description:
+          "Returns dashboard port and URL, OS platform, scheduler title and the active profile.",
+        options: { codemode: true },
+        execute: getDashboardInfoExecute as any,
+      });
+
+      editor.add({
+        name: "cleanup_history",
+        input: cleanupHistorySchema,
+        description:
+          "Deletes old run history by age and/or record cap, using the stored retention policy unless overridden.",
+        options: { codemode: true },
+        execute: cleanupHistoryExecute as any,
+      });
+
+      editor.add({
+        name: "emit_event",
+        input: emitEventSchema,
+        description:
+          "Emits an MCP event: every task with triggerType 'mcp-event' matching the event name (and filter) is started in priority order.",
+        options: { codemode: true },
+        execute: emitEventExecute as any,
       });
     });
 
@@ -2011,7 +2641,7 @@ export default Plugin.define({
         const triggered: string[] = [];
         for (const def of matched) {
           try {
-            await scheduler.runTask(def.name);
+            await runTaskEntry(def.name);
             triggered.push(def.name);
             console.log(
               `[windows-scheduler] Запуск задачи "${def.name}" по MCP-событию "${normalized}".`
@@ -2053,8 +2683,11 @@ export default Plugin.define({
         return { success: true, logs: result.logs };
       },
       get_history: async (input: unknown) => {
-        const { limit } = input as { limit?: number };
-        const records = await loadHistory();
+        const { limit, taskName } = input as { limit?: number; taskName?: string };
+        const filter = taskName?.trim().toLowerCase();
+        const records = (await loadHistory()).filter(
+          (record) => !filter || record.taskName.toLowerCase() === filter
+        );
         return { records: records.slice(0, limit ?? 10) };
       },
       get_metrics: async () => {
@@ -2577,7 +3210,7 @@ export default Plugin.define({
       rpcRegistration.dispose();
       registration.dispose();
       void skillRegistration?.dispose();
-      void fileWatcherManager.stop();
+      if (fileWatcherManager) void fileWatcherManager.stop();
       // При выгрузке плагина обязательно закрываем HTTP-сервер дашборда,
       // затем соединение SQLite (чекпойнт WAL выполняется в closeDb).
       void closeDashboardServer().finally(() => closeDb());
@@ -2816,7 +3449,12 @@ async function schedulerCreateTask(
         )
       : undefined;
   const wrapperGate = gate
-    ? { ...gate, gateFile: gatePath, deferFile: `${lockFile}.defer` }
+    ? {
+        ...gate,
+        gateFile: gatePath,
+        deferFile: `${lockFile}.defer`,
+        forceFile: `${lockFile}.force`,
+      }
     : undefined;
   // Workspace имеет приоритет над workingDirectory: одна задача = один repo
   // = один cwd. Мы не угадываем, куда мержить, и не смешиваем контексты.
@@ -3107,7 +3745,22 @@ async function runTaskEntry(name: string): Promise<{ alreadyRunning: boolean }> 
     await runMatrix(definition);
     return { alreadyRunning: false };
   }
-  return scheduler.runTask(name);
+
+  // Любой запуск через этот вход — «сейчас», а не «по расписанию»:
+  // run_task_now, RPC GUI, файловый триггер, MCP-событие и catch-up.
+  // Маркер снимает проверку cron/окна внутри обёртки (poll-режим), иначе
+  // запуск молча отменялся бы schedule-gate с кодом 3.
+  const forceFile = await requestImmediateRun(name);
+  try {
+    return await scheduler.runTask(name);
+  } catch (err) {
+    // Планировщик не принял запуск — маркер не нужен, иначе он мог бы
+    // «разрешить» следующий плановый тик в обход расписания.
+    await fs.unlink(forceFile).catch(() => {
+      /* не критично */
+    });
+    throw err;
+  }
 }
 
 /**
@@ -3132,7 +3785,39 @@ async function collectTasksView() {
   const workspaces = listWorkspaces();
   const workspaceById = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
 
-  return tasks.map((t) => {
+  // Счётчики запусков по задачам. Основной источник — таблица metrics
+  // (накопительные итоги, не зависят от retention истории). Для задач, у
+  // которых метрик ещё нет, считаем по загруженной истории.
+  const metricsByName = new Map(
+    getAllMetrics(true).map((row) => [row.taskName.toLowerCase(), row])
+  );
+  const historyCounts = new Map<string, { total: number; success: number; error: number }>();
+  for (const record of history) {
+    const key = record.taskName.toLowerCase();
+    const counts = historyCounts.get(key) ?? { total: 0, success: 0, error: 0 };
+    counts.total += 1;
+    if (record.status === "success") counts.success += 1;
+    else counts.error += 1;
+    historyCounts.set(key, counts);
+  }
+
+  // ОС-планировщик — источник истины о запуске, но определения в БД могут
+  // существовать без задачи в ОС (сбой удаления, миграция, ручная чистка).
+  // Показываем и их, помечая orphaned: раньше такие задачи были невидимы
+  // для list_tasks, хотя dry_run/история их видели.
+  const osNames = new Set(tasks.map((t) => (t.taskName || "").toLowerCase()));
+  const orphanNames = defs
+    .filter((def) => !osNames.has(def.name.toLowerCase()))
+    .map((def) => def.name);
+  const sources: Array<{ task: (typeof tasks)[number]; orphaned: boolean }> = [
+    ...tasks.map((task) => ({ task, orphaned: false })),
+    ...orphanNames.map((name) => ({
+      task: { taskName: name } as (typeof tasks)[number],
+      orphaned: true,
+    })),
+  ];
+
+  return sources.map(({ task: t, orphaned }) => {
     // Все бэкенды возвращают короткие имена (без папки планировщика).
     const name = t.taskName || "";
 
@@ -3156,10 +3841,21 @@ async function collectTasksView() {
       status = matrixAggregate.status === "running" ? "running" : matrixAggregate.status;
     }
 
+    // Счётчики именно этой задачи (раньше GUI показывал на каждой карточке
+    // общие итоги по всем задачам — отсюда одинаковые 201/130/71).
+    const metricsRow = metricsByName.get(name.toLowerCase());
+    const counts = metricsRow
+      ? { total: metricsRow.total, success: metricsRow.success, error: metricsRow.error }
+      : historyCounts.get(name.toLowerCase()) ?? { total: 0, success: 0, error: 0 };
+
     return {
       name,
       schedule: def?.schedule ?? "",
       status,
+      orphaned,
+      runsTotal: counts.total,
+      runsSuccess: counts.success,
+      runsError: counts.error,
       nextRun: t.nextRunTime ? String(t.nextRunTime) : null,
       model: def?.model ?? null,
       priority: def?.priority ?? 5,

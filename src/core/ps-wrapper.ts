@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PLUGIN_DIR, LOG_DIR, WRAPPER_DIR } from "../types.js";
+import { PLUGIN_DIR, LOG_DIR, LOCK_DIR, WRAPPER_DIR, sanitizeName } from "../types.js";
 import type { ScheduleGateSpec } from "./schedule-v2.js";
 
 /**
@@ -503,7 +503,12 @@ export async function writeWrapperCmd(
   workspaceName?: string,
   allowedTools?: string[],
   deniedTools?: string[],
-  scheduleGate?: ScheduleGateSpec & { gateFile: string; deferFile?: string },
+  scheduleGate?: ScheduleGateSpec & {
+    gateFile: string;
+    deferFile?: string;
+    forceFile?: string;
+    forceTtlMs?: number;
+  },
   envFile?: string
 ): Promise<string> {
   await fs.mkdir(WRAPPER_DIR, { recursive: true });
@@ -615,6 +620,12 @@ export async function writeWrapperCmd(
     if (scheduleGate.deferFile?.trim()) {
       gateArgs.push(`--defer-file "${scheduleGate.deferFile.trim()}"`);
     }
+    // Маркер ручного запуска: run_task_now/файловый триггер/MCP-событие
+    // создают его перед вызовом schtasks /run, чтобы gate не отсекал запуск
+    // по cron. Без этого run_task_now был тихим no-op для poll-режима.
+    if (scheduleGate.forceFile?.trim()) {
+      gateArgs.push(`--force-file "${scheduleGate.forceFile.trim()}"`);
+    }
     // append к логу задачи, чтобы перенос/пропуск был виден в истории запусков
     if (logFile?.trim()) {
       gateArgs.push(`>> "${logFile.trim()}" 2>&1`);
@@ -628,3 +639,48 @@ export async function writeWrapperCmd(
   await fs.writeFile(cmdPath, lines.join("\r\n"), "utf8");
   return cmdPath;
 }
+
+// ---------------------------------------------------------------------------
+// Маркер ручного запуска.
+
+/** Сколько живёт маркер ручного запуска (должно совпадать с schedule-gate.ts). */
+export const FORCE_FILE_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * Путь к маркеру немедленного запуска задачи.
+ *
+ * Лежит рядом с lock-файлом и вычисляется из того же санитизированного имени,
+ * поэтому обёртка (--force-file) и агент указывают на один и тот же файл.
+ */
+export function forceFilePath(taskName: string): string {
+  return `${lockFilePath(sanitizeName(taskName))}.force`;
+}
+
+/**
+ * Создаёт маркер «запустить сейчас» перед вызовом планировщика ОС.
+ *
+ * Зачем: для poll-режима (нестандартный cron/чужая таймзона/окно запуска)
+ * обёртка всегда прогоняет schedule-gate, и ручной запуск вне cron-окна
+ * молча завершался с exit 3 — инструмент рапортовал success, но задача не
+ * выполнялась. Gate поглощает свежий маркер и пропускает проверку расписания.
+ *
+ * Маркер самоуничтожается через FORCE_FILE_TTL_MS, если задача так и не
+ * стартовала (например, отключена в планировщике), чтобы не влиять на
+ * последующие плановые запуски.
+ */
+export async function requestImmediateRun(taskName: string): Promise<string> {
+  const file = forceFilePath(taskName);
+  await fs.mkdir(LOCK_DIR, { recursive: true });
+  await fs.writeFile(file, new Date().toISOString(), "utf8");
+
+  const timer = setTimeout(() => {
+    void fs.unlink(file).catch(() => {
+      /* маркер уже поглощён gate'ом или удалён вручную */
+    });
+  }, FORCE_FILE_TTL_MS);
+  // Таймер не должен удерживать процесс хоста.
+  if (typeof timer.unref === "function") timer.unref();
+
+  return file;
+}
+

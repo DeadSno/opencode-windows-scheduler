@@ -15,6 +15,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Уведомления матриц (успех, `partial`, «все упали») и детектор зависших клонов (`matrix.stuckAfterMinutes`, одно уведомление на запуск).
 - Дайджест (ежедневный/еженедельный): запуски, success rate, стоимость, токены, топ ошибок; RPC `send_digest`, кнопка «📊 Отправить дайджест сейчас», GUI-настройки таймаута/шаблонов/фильтров/матриц/дайджеста. ntfy.sh не реализован (исключён заданием).
 - `test-notifications-v2.mjs` (44 проверки) — добавлен в `npm test`.
+- **Полный паритет агента (10 новых инструментов):** `get_metrics`, `get_analytics`, `manage_settings`, `manage_templates`, `manage_profiles`, `transfer_tasks`, `send_notification`, `get_dashboard_info`, `cleanup_history`, `emit_event`; `matrix_control` получил действие `preview`. Все операции, ранее доступные только в GUI/RPC, теперь доступны агенту (итого 22 инструмента).
 
 ### Profiles (Спринт 21)
 
@@ -34,6 +35,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `test-profiles.mjs` (58 проверок) — профили: default vs named dir, sanitize/validate, create/list/delete, маркер, порт env > profile.json > null, изоляция БД/настроек через subprocess с разными `OPENCODE_SCHEDULER_HOME`/`OPENCODE_SCHEDULER_PROFILE`.
 - `test-env.mjs` (53 проверок) — парсер `.env` (комментарии, кавычки, `export `), приоритет пар над файлом, валидация ключей и >100 пар, `maskEnvForLog` (секреты → `***`), `writeWorkspaceEnvFile` (содержимое, права 0600, очистка устаревших), круговая запись workspace с env/envFile в БД.
 - Оба теста добавлены в цепочку `npm test` (итого 17 секций, 500+ проверок).
+
+### Fixed
+
+- **`run_task_now` больше не зависит от расписания.** Одноразовый маркер `--force-file` (срок жизни 2 минуты) снимает проверку cron в `schedule-gate`; маркер ставят все немедленные запуски: инструмент, RPC, файловые триггеры, MCP-события и catch-up.
+- **Файловые триггеры работают без перезапуска OpenCode.** `schedule_task` принимает `watchPath`, а набор watcher-ов пересобирается после создания, обновления и удаления задачи.
+- **`list_tasks` показывает определения, оставшиеся только в БД.** Такие задачи помечаются `orphaned: true` вместо того, чтобы молча исчезать из списка.
+- **`delete_task` честно сообщает об отсутствии задачи.** Вместо ложного `success` возвращается ошибка «не найдена — удалять нечего».
+- **Карточки задач показывают свою статистику.** Раньше каждая карточка выводила общие метрики (одинаковые 201/130/71 у всех); теперь `get_tasks` отдаёт `runsTotal`/`runsSuccess`/`runsError` по задаче, общие итоги вынесены в шапку панели. Окно истории фильтруется по задаче (`get_history` принимает `taskName`).
+- **«+ Создать» в профилях работает.** `window.prompt` не поддерживается в Electron — все семь вызовов заменены на собственный модальный `askText()` (Enter/ОК, Escape/отмена; для env — textarea с Ctrl+Enter).
 
 ### Planned
 

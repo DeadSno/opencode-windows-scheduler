@@ -341,9 +341,12 @@ the `cleanup_history` RPC and the GUI's «Очистить сейчас» button
 
 ## Agent interface
 
-Twelve tools: `schedule_task`, `list_tasks`, `update_task`, `delete_task`,
+Twenty-two tools: `schedule_task`, `list_tasks`, `update_task`, `delete_task`,
 `run_task_now`, `pause_task`, `resume_task`, `get_history`, `get_task_logs`, `dry_run`,
-`manage_workspaces`, `matrix_control`.
+`manage_workspaces`, `matrix_control` (results/cancel/cleanup/preview), `get_metrics`,
+`get_analytics`, `manage_settings`, `manage_templates`, `manage_profiles`,
+`transfer_tasks`, `send_notification`, `get_dashboard_info`, `cleanup_history`,
+`emit_event`.
 
 A bundled skill, `scheduled-job-best-practices`, teaches the agent safe defaults:
 least privilege, Quality Gates, timeout, matrix concurrency, DAG rules and a
