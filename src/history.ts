@@ -50,6 +50,8 @@ export interface Metrics {
   total: number;
   success: number;
   error: number;
+  /** Частичные выполнения (post-flight/quality gate не прошёл). */
+  partial: number;
   tokens?: number;
   costUsd?: number;
 }

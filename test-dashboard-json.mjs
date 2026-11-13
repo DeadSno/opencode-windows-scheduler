@@ -21,6 +21,7 @@ const {
   isDashboardRunning,
 } = await import("./dist/server.js");
 const { insertHistory } = await import("./dist/db/history-repo.js");
+const { incrementMetrics } = await import("./dist/db/metrics-repo.js");
 
 // Сид истории для проверки фильтров /api/history. Записи идут от старых к
 // новым, сервер сортирует их сам по started_at DESC.
@@ -48,6 +49,9 @@ historySeed.forEach(([taskName, status], index) => {
     finishedAt: startedAt,
     durationMs: 1000 + index,
   });
+  // Отдельно наполняем агрегированную таблицу metrics: /api/metrics читает
+  // именно её, а не историю (история используется только для tokens/costUsd).
+  incrementMetrics(taskName, status);
 });
 
 const assert = (cond, msg) => {
@@ -115,6 +119,7 @@ assert(
 );
 assert(html.includes("res.status === 499") && html.includes("ct.indexOf('image/') === 0"), "подсказка срабатывает на статус 499 и Content-Type image/*");
 assert(html.includes("http://localhost:3782"), "футер по умолчанию указывает на новый порт 3782");
+assert(html.includes('id="m-partial"'), "на странице есть отдельная карточка частичных запусков");
 
 // Клиентский JS должен быть синтаксически валиден (ловит незаэкранированные
 // переводы строк внутри строковых литералов, ломающие весь скрипт).
@@ -139,7 +144,14 @@ assert(tasksApi.status === 200 && Array.isArray(tasksApi.body.tasks), "GET /api/
 assert(tasksApi.contentType.includes("application/json"), "GET /api/tasks Content-Type = application/json");
 
 const metricsApi = await readJsonResponse(await fetch(base + "/api/metrics"));
-assert(metricsApi.body.tokens === 0 && metricsApi.body.costUsd === 0, "метрики из пустой истории -> tokens/costUsd = 0");
+assert(metricsApi.body.tokens === 0 && metricsApi.body.costUsd === 0, "метрики без токенов -> tokens/costUsd = 0");
+assert(
+  metricsApi.body.total === 12 &&
+    metricsApi.body.success === 7 &&
+    metricsApi.body.error === 2 &&
+    metricsApi.body.partial === 3,
+  "метрики разделяют success/error/partial: 7/2/3"
+);
 
 // Фильтры истории: имя задачи, статус и limit.
 const historyAll = await readJsonResponse(await fetch(base + "/api/history?limit=500"));
@@ -164,7 +176,12 @@ const favicon = await fetch(base + "/favicon.ico");
 assert(favicon.status === 204, "GET /favicon.ico -> 204 без 404 в консоли");
 
 const summaryApi = await readJsonResponse(await fetch(base + "/api/summary"));
-assert(summaryApi.status === 200 && summaryApi.body.total === metricsApi.body.total, "/api/summary отдаёт те же метрики");
+assert(
+  summaryApi.status === 200 &&
+    summaryApi.body.total === metricsApi.body.total &&
+    summaryApi.body.partial === metricsApi.body.partial,
+  "/api/summary отдаёт те же метрики, включая partial"
+);
 
 const wrongSummaryMethod = await readJsonResponse(await fetch(base + "/api/summary", { method: "POST" }));
 assert(wrongSummaryMethod.status === 405, "POST /api/summary -> 405");

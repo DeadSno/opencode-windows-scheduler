@@ -125,6 +125,14 @@ const TaskItem = {
     paused: { type: "boolean" },
     /** true — определение есть в БД, но задачи нет в планировщике ОС. */
     orphaned: { type: "boolean" },
+    /** Всего запусков именно этой задачи. */
+    runsTotal: { type: "number" },
+    /** Успешных запусков этой задачи. */
+    runsSuccess: { type: "number" },
+    /** Ошибок и таймаутов этой задачи. */
+    runsError: { type: "number" },
+    /** Частичных выполнений этой задачи (partial). */
+    runsPartial: { type: "number" },
     /** Агрегат по клонам для родителя (null — не матрица). */
     matrixSummary: {
       type: ["object", "null"],

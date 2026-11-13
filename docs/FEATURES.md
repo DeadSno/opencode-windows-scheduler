@@ -329,7 +329,9 @@ CSV/JSON (`GET /api/history/export`), or as OTLP/JSON for OpenTelemetry
 `GET /metrics` exposes the Prometheus text format (0.0.4): `opencode_scheduler_info`,
 `up`, `queue_depth`, `history_records`, `runs_total{task,status}`,
 `errors_total{task}`, `tokens_total{task}`, `cost_usd_total{task}` and the
-`run_duration_seconds` histogram (1 s … 3600 s + `+Inf`). Values are read from
+`run_duration_seconds` histogram (1 s … 3600 s + `+Inf`). `runs_total` has
+separate `success`, `error` and `partial` statuses; `errors_total` counts only
+errors and timeouts, so `partial` never inflates it. Values are read from
 SQLite at scrape time, so no extra agent or exporter process is required.
 
 ### Structured logs

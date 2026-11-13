@@ -69,8 +69,10 @@ interface Job {
   runsTotal?: number
   /** Успешных запусков этой задачи. */
   runsSuccess?: number
-  /** Неуспешных запусков этой задачи. */
+  /** Ошибок и таймаутов этой задачи. */
   runsError?: number
+  /** Частичных выполнений этой задачи (partial). */
+  runsPartial?: number
   nextRun?: string
   paused?: boolean
   orphaned?: boolean
@@ -1243,6 +1245,7 @@ export default Plugin.define({
           runsTotal: typeof t.runsTotal === "number" ? t.runsTotal : 0,
           runsSuccess: typeof t.runsSuccess === "number" ? t.runsSuccess : 0,
           runsError: typeof t.runsError === "number" ? t.runsError : 0,
+          runsPartial: typeof t.runsPartial === "number" ? t.runsPartial : 0,
           nextRun: t.nextRun ?? undefined,
           // Признак паузы приходит из collectTasksView явно (disabled в ОС).
           paused: Boolean((t as any).paused),
@@ -1967,10 +1970,10 @@ export default Plugin.define({
               </div>
             )}
             <div
-              title="Запуски именно этой задачи (успешные / с ошибкой)"
+              title="Запуски именно этой задачи: успешные / частичные / ошибки и таймауты"
               style="font-size:12px;color:#a0a0a6;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
             >
-              📊 Всего: {job.runsTotal ?? 0} | ✅ {job.runsSuccess ?? 0} | ❌ {job.runsError ?? 0}
+              📊 Всего: {job.runsTotal ?? 0} | ✅ {job.runsSuccess ?? 0} | 🟠 {job.runsPartial ?? 0} | ❌ {job.runsError ?? 0}
             </div>
             {(job.schedule || job.nextRun) && (
               <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#a0a0a6;margin-top:2px">

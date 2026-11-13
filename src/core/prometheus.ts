@@ -138,6 +138,10 @@ export function renderPrometheusMetrics(): string {
       labels: { task: row.taskName, status: "error" },
       value: row.error,
     });
+    runSamples.push({
+      labels: { task: row.taskName, status: "partial" },
+      value: row.partial,
+    });
     errorSamples.push({ labels: { task: row.taskName }, value: row.error });
     tokenSamples.push({ labels: { task: row.taskName }, value: row.tokens });
     costSamples.push({ labels: { task: row.taskName }, value: row.costUsd });
@@ -153,7 +157,7 @@ export function renderPrometheusMetrics(): string {
     lines,
     "opencode_scheduler_errors_total",
     "counter",
-    "Количество неуспешных запусков по задачам.",
+    "Количество ошибок и таймаутов по задачам (partial не входит).",
     errorSamples
   );
   metric(

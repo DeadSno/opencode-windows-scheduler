@@ -222,6 +222,19 @@ records = readStructuredLogs({ task: "legacy-task" }).records;
 assert(records.length === 1 && records[0].status === "error", "recordRun пишет run.finished со статусом error");
 assert(records[0].error === "boom", "recordRun сохраняет текст ошибки");
 
+const partialId = recordRun(
+  "partial-task",
+  "partial",
+  "2026-02-03T09:00:00.000Z",
+  1000,
+  "частичный результат",
+  null,
+  20,
+  0.02,
+  "m2"
+);
+assert(partialId > 0, "recordRun сохраняет частичный запуск");
+
 // --- 5. Prometheus ------------------------------------------------------
 const prom = renderPrometheusMetrics();
 assert(prom.includes("# TYPE opencode_scheduler_runs_total counter"), "Prometheus: runs_total объявлен counter");
@@ -231,6 +244,14 @@ assert(prom.includes("opencode_scheduler_up 1"), "Prometheus: up = 1");
 assert(prom.includes("opencode_scheduler_queue_depth 0"), "Prometheus: queue_depth = 0");
 assert(prom.includes('opencode_scheduler_runs_total{task="db-task",status="success"} 1'), "Prometheus: успешный запуск посчитан");
 assert(prom.includes('opencode_scheduler_errors_total{task="legacy-task"} 1'), "Prometheus: ошибка посчитана");
+assert(
+  prom.includes('opencode_scheduler_runs_total{task="partial-task",status="partial"} 1'),
+  "Prometheus: частичный запуск посчитан отдельно"
+);
+assert(
+  prom.includes('opencode_scheduler_errors_total{task="partial-task"} 0'),
+  "Prometheus: partial не увеличивает errors_total"
+);
 assert(prom.includes('opencode_scheduler_tokens_total{task="db-task"} 1234'), "Prometheus: токены посчитаны");
 assert(prom.includes("opencode_scheduler_run_duration_seconds_bucket"), "Prometheus: histogram длительности присутствует");
 assert(prom.includes('le="+Inf"'), "Prometheus: histogram содержит +Inf");

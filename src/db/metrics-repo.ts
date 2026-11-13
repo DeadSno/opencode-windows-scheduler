@@ -16,6 +16,8 @@ export interface TaskMetricsRow {
   total: number;
   success: number;
   error: number;
+  /** Частичные выполнения: ответ получен, но post-flight/quality gate не прошёл. */
+  partial: number;
   tokens: number;
   costUsd: number;
 }
@@ -24,6 +26,7 @@ export interface MetricsTotals {
   total: number;
   success: number;
   error: number;
+  partial: number;
   tokens: number;
   costUsd: number;
 }
@@ -41,6 +44,7 @@ function rowToMetrics(row: any): TaskMetricsRow {
     total: Number(row.total) || 0,
     success: Number(row.success) || 0,
     error: Number(row.error) || 0,
+    partial: Number(row.partial) || 0,
     tokens: Number(row.total_tokens) || 0,
     costUsd: Number(row.total_cost) || 0,
   };
@@ -53,25 +57,27 @@ export function incrementMetricsUnsafe(
   tokens = 0,
   costUsd = 0
 ): void {
-  // В таблице metrics два счётчика: success и error. Сюда попадают все
-  // неуспешные статусы, включая partial; в аналитике partial считается отдельно.
+  // error — только ошибки и таймауты; partial хранится отдельным счётчиком,
+  // иначе дашборд показывал частичный запуск как обычную ошибку.
   const success = status === "success" ? 1 : 0;
-  const error = status === "success" ? 0 : 1;
+  const partial = status === "partial" ? 1 : 0;
+  const error = status === "error" || status === "timeout" ? 1 : 0;
   const safeTokens = Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;
   const safeCost = Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0;
 
   getDb()
     .prepare(
-      `INSERT INTO metrics (task_name, total, success, error, total_tokens, total_cost)
-       VALUES (?, 1, ?, ?, ?, ?)
+      `INSERT INTO metrics (task_name, total, success, error, partial, total_tokens, total_cost)
+       VALUES (?, 1, ?, ?, ?, ?, ?)
        ON CONFLICT(task_name) DO UPDATE SET
          total = total + 1,
          success = success + excluded.success,
          error = error + excluded.error,
+         partial = partial + excluded.partial,
          total_tokens = total_tokens + excluded.total_tokens,
          total_cost = total_cost + excluded.total_cost`
     )
-    .run(taskName, success, error, safeTokens, safeCost);
+    .run(taskName, success, error, partial, safeTokens, safeCost);
 }
 
 /** Атомарно увеличивает счётчики задачи: +1 запуск, +1 success/error, токены, стоимость. */
@@ -90,7 +96,7 @@ export function getMetrics(taskName: string): TaskMetricsRow {
     .prepare("SELECT * FROM metrics WHERE lower(task_name) = lower(?) LIMIT 1")
     .get(taskName) as any;
   if (!row) {
-    return { taskName, total: 0, success: 0, error: 0, tokens: 0, costUsd: 0 };
+    return { taskName, total: 0, success: 0, error: 0, partial: 0, tokens: 0, costUsd: 0 };
   }
   return rowToMetrics(row);
 }
@@ -111,6 +117,7 @@ export function getTotals(): MetricsTotals {
          COALESCE(SUM(total), 0) AS total,
          COALESCE(SUM(success), 0) AS success,
          COALESCE(SUM(error), 0) AS error,
+         COALESCE(SUM(partial), 0) AS partial,
          COALESCE(SUM(total_tokens), 0) AS tokens,
          COALESCE(SUM(total_cost), 0) AS cost_usd
        FROM metrics`
@@ -120,6 +127,7 @@ export function getTotals(): MetricsTotals {
     total: Number(row?.total) || 0,
     success: Number(row?.success) || 0,
     error: Number(row?.error) || 0,
+    partial: Number(row?.partial) || 0,
     tokens: Number(row?.tokens) || 0,
     costUsd: Number(row?.cost_usd) || 0,
   };
@@ -134,12 +142,13 @@ export function incrementGlobalMetrics(status: TaskStatus): void {
 export function upsertMetricsRow(row: TaskMetricsRow): void {
   getDb()
     .prepare(
-      `INSERT INTO metrics (task_name, total, success, error, total_tokens, total_cost)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO metrics (task_name, total, success, error, partial, total_tokens, total_cost)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(task_name) DO UPDATE SET
          total = excluded.total,
          success = excluded.success,
          error = excluded.error,
+         partial = excluded.partial,
          total_tokens = excluded.total_tokens,
          total_cost = excluded.total_cost`
     )
@@ -148,6 +157,7 @@ export function upsertMetricsRow(row: TaskMetricsRow): void {
       Math.max(0, Math.floor(row.total)),
       Math.max(0, Math.floor(row.success)),
       Math.max(0, Math.floor(row.error)),
+      Math.max(0, Math.floor(row.partial)),
       Math.max(0, Math.floor(row.tokens)),
       Math.max(0, row.costUsd)
     );

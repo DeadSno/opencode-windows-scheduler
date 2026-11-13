@@ -4133,12 +4133,21 @@ async function collectTasksView() {
   const metricsByName = new Map(
     getAllMetrics(true).map((row) => [row.taskName.toLowerCase(), row])
   );
-  const historyCounts = new Map<string, { total: number; success: number; error: number }>();
+  const historyCounts = new Map<
+    string,
+    { total: number; success: number; error: number; partial: number }
+  >();
   for (const record of history) {
     const key = record.taskName.toLowerCase();
-    const counts = historyCounts.get(key) ?? { total: 0, success: 0, error: 0 };
+    const counts = historyCounts.get(key) ?? {
+      total: 0,
+      success: 0,
+      error: 0,
+      partial: 0,
+    };
     counts.total += 1;
     if (record.status === "success") counts.success += 1;
+    else if (record.status === "partial") counts.partial += 1;
     else counts.error += 1;
     historyCounts.set(key, counts);
   }
@@ -4189,8 +4198,18 @@ async function collectTasksView() {
     // общие итоги по всем задачам — отсюда одинаковые 201/130/71).
     const metricsRow = metricsByName.get(name.toLowerCase());
     const counts = metricsRow
-      ? { total: metricsRow.total, success: metricsRow.success, error: metricsRow.error }
-      : historyCounts.get(name.toLowerCase()) ?? { total: 0, success: 0, error: 0 };
+      ? {
+          total: metricsRow.total,
+          success: metricsRow.success,
+          error: metricsRow.error,
+          partial: metricsRow.partial,
+        }
+      : historyCounts.get(name.toLowerCase()) ?? {
+          total: 0,
+          success: 0,
+          error: 0,
+          partial: 0,
+        };
 
     return {
       name,
@@ -4204,6 +4223,7 @@ async function collectTasksView() {
       runsTotal: counts.total,
       runsSuccess: counts.success,
       runsError: counts.error,
+      runsPartial: counts.partial,
       // Для разовой задачи показываем запланированное время, а не пустое расписание.
       nextRun: def?.triggerType === "once"
         ? def?.runAt ?? (t.nextRunTime ? String(t.nextRunTime) : null)

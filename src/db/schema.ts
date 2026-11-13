@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS metrics (
   total INTEGER DEFAULT 0,
   success INTEGER DEFAULT 0,
   error INTEGER DEFAULT 0,
+  partial INTEGER DEFAULT 0,
   total_tokens INTEGER DEFAULT 0,
   total_cost REAL DEFAULT 0
 );
@@ -119,5 +120,15 @@ export function applySchema(db: SchemaDb): void {
   }
   if (!workspaceColumnNames.includes("env_file")) {
     db.exec("ALTER TABLE workspaces ADD COLUMN env_file TEXT");
+  }
+
+  // Спринт 25: partial вынесен из error, чтобы дашборд не смешивал
+  // частичные выполнения с ошибками и таймаутами.
+  const metricsColumns = db.prepare("PRAGMA table_info(metrics)").all() as Array<{
+    name?: string;
+  }>;
+  const metricsColumnNames = metricsColumns.map((c) => c.name).filter(Boolean);
+  if (!metricsColumnNames.includes("partial")) {
+    db.exec("ALTER TABLE metrics ADD COLUMN partial INTEGER DEFAULT 0");
   }
 }

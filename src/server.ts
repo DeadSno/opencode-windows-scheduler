@@ -128,6 +128,8 @@ export interface TaskMetrics {
   total: number;
   success: number;
   error: number;
+  /** Частичные выполнения: ответ получен, но проверка не прошла. */
+  partial: number;
 }
 
 /** Агрегированная статистика по одной LLM-модели. */
@@ -1118,16 +1120,22 @@ async function collectTasksWithMetrics(deps: DashboardDeps) {
   for (const r of history) {
     const key = String(r.taskName || "").toLowerCase();
     if (!key) continue;
-    const m = byTask.get(key) ?? { total: 0, success: 0, error: 0 };
+    const m = byTask.get(key) ?? { total: 0, success: 0, error: 0, partial: 0 };
     m.total += 1;
     if (r.status === "success") m.success += 1;
+    else if (r.status === "partial") m.partial += 1;
     else m.error += 1;
     byTask.set(key, m);
   }
 
   return tasks.map((t) => ({
     ...t,
-    metrics: byTask.get(String(t.name).toLowerCase()) ?? { total: 0, success: 0, error: 0 },
+    metrics: byTask.get(String(t.name).toLowerCase()) ?? {
+      total: 0,
+      success: 0,
+      error: 0,
+      partial: 0,
+    },
   }));
 }
 
@@ -1176,12 +1184,13 @@ function renderPage(): string {
   h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: .2px; }
   .sub { margin-top: 5px; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); }
   .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 22px; }
-  @media (min-width: 900px) { .cards { grid-template-columns: repeat(6, 1fr); } }
+  @media (min-width: 900px) { .cards { grid-template-columns: repeat(4, 1fr); } }
+  @media (min-width: 1200px) { .cards { grid-template-columns: repeat(7, 1fr); } }
   @media (max-width: 520px) { .cards { grid-template-columns: repeat(2, 1fr); } }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
   .card .num { font-size: 26px; font-weight: 800; }
   .card .lbl { margin-top: 2px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-  .ok { color: var(--ok); } .err { color: var(--err); } .neu { color: var(--accent); }
+  .ok { color: var(--ok); } .err { color: var(--err); } .neu { color: var(--accent); } .run { color: var(--run); }
   table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   th, td { padding: 9px 9px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   th { background: var(--panel2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
@@ -1330,7 +1339,8 @@ function renderPage(): string {
     <div class="cards">
       <div class="card"><div class="num neu" id="m-total">—</div><div class="lbl">Всего запусков</div></div>
       <div class="card"><div class="num ok" id="m-success">—</div><div class="lbl">Успешных</div></div>
-      <div class="card" title="Неуспешные запуски: ошибки и частичные выполнения (partial)"><div class="num err" id="m-error">—</div><div class="lbl">Неуспешных</div></div>
+      <div class="card" title="Ошибки и таймауты. Частичные выполнения считаются отдельно."><div class="num err" id="m-error">—</div><div class="lbl">Ошибок</div></div>
+      <div class="card" title="Частичные выполнения (partial): ответ получен, но проверка не прошла"><div class="num run" id="m-partial">—</div><div class="lbl">Частичных</div></div>
       <div class="card"><div class="num" id="m-tasks">—</div><div class="lbl">Задач в системе</div></div>
       <div class="card"><div class="num neu" id="m-tokens">—</div><div class="lbl">Всего токенов</div></div>
       <div class="card"><div class="num" id="m-cost">—</div><div class="lbl">Примерная стоимость</div></div>
@@ -1532,9 +1542,10 @@ function renderPage(): string {
   }
 
   function metricsHtml(m) {
-    var mm = m || { total: 0, success: 0, error: 0 };
-    // В таблице metrics поле error хранит все неуспешные запуски, включая partial.
-    return 'Всего: <b>' + mm.total + '</b> · ✅ <b>' + mm.success + '</b> · <span title="Ошибки и частичные запуски (partial)">⚠️ <b>' + mm.error + '</b></span>';
+    var mm = m || { total: 0, success: 0, error: 0, partial: 0 };
+    return 'Всего: <b>' + mm.total + '</b> · ✅ <b>' + mm.success + '</b>' +
+      ' · <span title="Частичные выполнения (partial)" style="color:var(--run)">🟠 <b>' + (mm.partial || 0) + '</b></span>' +
+      ' · <span title="Ошибки и таймауты" style="color:var(--err)">⚠️ <b>' + mm.error + '</b></span>';
   }
 
   function depsHtml(t) {
@@ -2111,6 +2122,7 @@ function renderPage(): string {
       document.getElementById('m-total').textContent = m.total != null ? m.total : '—';
       document.getElementById('m-success').textContent = m.success != null ? m.success : '—';
       document.getElementById('m-error').textContent = m.error != null ? m.error : '—';
+      document.getElementById('m-partial').textContent = m.partial != null ? m.partial : '—';
       document.getElementById('m-tasks').textContent = String(tasks.length);
       document.getElementById('m-tokens').textContent = m.tokens != null ? Number(m.tokens).toLocaleString('ru-RU') : '—';
       document.getElementById('m-cost').textContent = m.costUsd != null ? '$' + Number(m.costUsd).toFixed(2) : '—';

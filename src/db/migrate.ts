@@ -236,11 +236,13 @@ export async function migrateJsonToDb(
           total: 0,
           success: 0,
           error: 0,
+          partial: 0,
           tokens: 0,
           costUsd: 0,
         } satisfies TaskMetricsRow);
       current.total += 1;
       if (row.status === "success") current.success += 1;
+      else if (row.status === "partial") current.partial += 1;
       else current.error += 1;
       current.tokens += Math.max(0, row.tokens ?? 0);
       current.costUsd += Math.max(0, row.costUsd ?? 0);
@@ -253,16 +255,19 @@ export async function migrateJsonToDb(
           total: acc.total + row.total,
           success: acc.success + row.success,
           error: acc.error + row.error,
+          partial: acc.partial + row.partial,
           tokens: acc.tokens + row.tokens,
           costUsd: acc.costUsd + row.costUsd,
         }),
-        { total: 0, success: 0, error: 0, tokens: 0, costUsd: 0 }
+        { total: 0, success: 0, error: 0, partial: 0, tokens: 0, costUsd: 0 }
       );
 
       const extra = {
         total: Math.max(0, (toNumber(legacyMetrics.total) ?? 0) - migrated.total),
         success: Math.max(0, (toNumber(legacyMetrics.success) ?? 0) - migrated.success),
         error: Math.max(0, (toNumber(legacyMetrics.error) ?? 0) - migrated.error),
+        // В старом metrics.json не было отдельного счётчика partial.
+        partial: 0,
         tokens: Math.max(0, (toNumber(legacyMetrics.tokens) ?? 0) - migrated.tokens),
         costUsd: Math.max(0, (toNumber(legacyMetrics.costUsd) ?? 0) - migrated.costUsd),
       };
@@ -277,6 +282,7 @@ export async function migrateJsonToDb(
           total: extra.total,
           success: extra.success,
           error: extra.error,
+          partial: extra.partial,
           tokens: extra.tokens,
           costUsd: extra.costUsd,
         });
