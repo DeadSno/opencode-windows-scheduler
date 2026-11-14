@@ -21,6 +21,7 @@ import {
 import { appendStructuredLog, readStructuredLogs } from "./core/structured-log.js";
 import { PROMETHEUS_CONTENT_TYPE, renderPrometheusMetrics } from "./core/prometheus.js";
 import { buildOtlpExport } from "./core/otel.js";
+import { readAuditLog, recordAudit } from "./core/audit.js";
 
 /**
  * Локальный веб-дашборд (Спринт 5).
@@ -621,6 +622,7 @@ async function handleRequest(
       pathname === "/api/history/export" ||
       pathname === "/api/export-db" ||
       pathname === "/api/workspaces" ||
+      pathname === "/api/audit" ||
       pathname === "/api/health" ||
       pathname === "/api/logs" ||
       pathname === "/metrics" ||
@@ -935,6 +937,27 @@ async function handleRequest(
       return;
     }
 
+    // Журнал аудита (Спринт 26): GET /api/audit?action=…&actor=…&limit=…
+    if (req.method === "GET" && pathname === "/api/audit") {
+      try {
+        const limitRaw = Number(url.searchParams.get("limit"));
+        const result = readAuditLog({
+          action: url.searchParams.get("action") ?? undefined,
+          target: url.searchParams.get("target") ?? undefined,
+          actor: url.searchParams.get("actor") ?? undefined,
+          since: url.searchParams.get("since") ?? undefined,
+          until: url.searchParams.get("until") ?? undefined,
+          limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+        });
+        sendJson(res, 200, { success: true, ...result });
+      } catch (err: any) {
+        sendJson(res, 500, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
     // Входящий webhook-триггер (Спринт 22): POST /api/hooks/:task?token=…
     const hookMatch = req.method === "POST" && pathname.match(/^\/api\/hooks\/(.+)$/);
     if (hookMatch) {
@@ -1022,6 +1045,15 @@ async function handleRequest(
           ? `Задача "${task.name}" уже выполняется.`
           : `Задача "${task.name}" запущена по webhook.`;
         logHook(202, "accepted", undefined, bodyResult.body.length);
+        recordAudit({
+          action: "task.run",
+          targetType: "task",
+          target: task.name,
+          actor: "http",
+          source: "POST /api/hooks/:name",
+          remote,
+          details: { trigger: "hook" },
+        });
         sendJson(res, 202, {
           success: true,
           task: task.name,
@@ -1046,6 +1078,15 @@ async function handleRequest(
       }
       try {
         const result = await deps.runTask(name);
+        recordAudit({
+          action: "task.run",
+          targetType: "task",
+          target: name,
+          actor: "http",
+          source: "POST /api/run/:name",
+          remote: req.socket.remoteAddress ?? null,
+          details: { alreadyRunning: Boolean(result?.alreadyRunning) },
+        });
         sendJson(res, 200, {
           success: true,
           message: result?.alreadyRunning
@@ -1076,6 +1117,15 @@ async function handleRequest(
       }
       try {
         const result = await deps.cancelMatrix(name);
+        recordAudit({
+          action: "matrix.cancel",
+          targetType: "matrix",
+          target: name,
+          actor: "http",
+          source: "POST /api/cancel-matrix/:name",
+          remote: req.socket.remoteAddress ?? null,
+          details: { cancelled: result.cancelled },
+        });
         sendJson(res, 200, {
           success: true,
           message: result.message,
@@ -1098,6 +1148,15 @@ async function handleRequest(
       }
       try {
         const removed = await deps.cleanupMatrixOrphans();
+        recordAudit({
+          action: "matrix.cleanup",
+          targetType: "matrix",
+          target: "orphans",
+          actor: "http",
+          source: "POST /api/matrix-cleanup",
+          remote: req.socket.remoteAddress ?? null,
+          details: { removed: removed.length },
+        });
         sendJson(res, 200, {
           success: true,
           removed,
@@ -1125,6 +1184,14 @@ async function handleRequest(
       }
       try {
         await deps.deleteTask(name);
+        recordAudit({
+          action: "task.delete",
+          targetType: "task",
+          target: name,
+          actor: "http",
+          source: "POST /api/delete/:name",
+          remote: req.socket.remoteAddress ?? null,
+        });
         sendJson(res, 200, { success: true, message: `Задача "${name}" удалена.` });
       } catch (err: any) {
         sendJson(res, 500, {

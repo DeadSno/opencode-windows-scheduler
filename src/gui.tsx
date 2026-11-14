@@ -377,6 +377,25 @@ export default Plugin.define({
     const [quietTo, setQuietTo] = createSignal("08:00")
     const [digestBusy, setDigestBusy] = createSignal(false)
 
+    // Секреты (Спринт 26): зашифрованное хранилище.
+    const [secretsList, setSecretsList] = createSignal<{ name: string; preview: string; updatedAt: string }[]>([])
+    const [secretsBusy, setSecretsBusy] = createSignal(false)
+    const [secretName, setSecretName] = createSignal("")
+    const [secretValue, setSecretValue] = createSignal("")
+
+    // Аудит (Спринт 26): журнал мутаций.
+    const [auditRecords, setAuditRecords] = createSignal<{ id: number; ts: string; action: string; targetType: string | null; target: string | null; actor: string; source: string | null; details: unknown; remote: string | null }[]>([])
+    const [auditBusy, setAuditBusy] = createSignal(false)
+    const [auditCollapsed, setAuditCollapsed] = createSignal(true)
+    const [auditFilterAction, setAuditFilterAction] = createSignal("")
+    const [auditFilterActor, setAuditFilterActor] = createSignal("")
+    const [auditFilterTarget, setAuditFilterTarget] = createSignal("")
+
+    // Настройки аудита (ретеншн).
+    const [auditRetentionEnabled, setAuditRetentionEnabled] = createSignal(true)
+    const [auditRetentionDays, setAuditRetentionDays] = createSignal(90)
+    const [auditMaxRecords, setAuditMaxRecords] = createSignal(10000)
+
     // Настройки ретеншна истории (Спринт 18): очистка старых записей.
     const [historyRetentionDays, setHistoryRetentionDays] = createSignal(30)
     const [historyMaxRecords, setHistoryMaxRecords] = createSignal(5000)
@@ -439,6 +458,10 @@ export default Plugin.define({
       setQuietEnabled(Boolean(n?.quietHours?.enabled))
       setQuietFrom(n?.quietHours?.from ?? "22:00")
       setQuietTo(n?.quietHours?.to ?? "08:00")
+      const a = n?.audit
+      setAuditRetentionEnabled(Boolean(a?.enabled !== false))
+      setAuditRetentionDays(Number(a?.retentionDays ?? 90))
+      setAuditMaxRecords(Number(a?.maxRecords ?? 10000))
     }
 
     async function loadSettingsGui() {
@@ -452,9 +475,16 @@ export default Plugin.define({
         setHistoryMaxRecords(Number(h?.maxRecords ?? 5000))
         setHistoryLastCleanupAt(h?.lastCleanupAt ?? null)
         setHistoryLastCleanupDeleted(Number(h?.lastCleanupDeleted ?? 0))
+        const au = s.audit
+        setAuditRetentionEnabled(Boolean(au?.enabled !== false))
+        setAuditRetentionDays(Number(au?.retentionDays ?? 90))
+        setAuditMaxRecords(Number(au?.maxRecords ?? 10000))
       } catch (err: any) {
         console.error("RPC Error (get_settings):", err)
       }
+
+      void loadSecretsGui()
+      void loadAuditGui()
     }
 
     /** Текущие настройки уведомлений из сигналов формы. */
@@ -516,6 +546,11 @@ export default Plugin.define({
           time: (digestTime() || "09:00").trim(),
           lastSentAt: digestLastSentAt(),
         },
+        audit: {
+          enabled: auditRetentionEnabled(),
+          retentionDays: auditRetentionDays(),
+          maxRecords: auditMaxRecords(),
+        },
       }
     }
 
@@ -548,6 +583,12 @@ export default Plugin.define({
           setHistoryMaxRecords(Number(h?.maxRecords ?? 5000))
           setHistoryLastCleanupAt(h?.lastCleanupAt ?? null)
           setHistoryLastCleanupDeleted(Number(h?.lastCleanupDeleted ?? 0))
+        }
+        if (patch.audit !== undefined) {
+          const au = s.audit
+          setAuditRetentionEnabled(Boolean(au?.enabled !== false))
+          setAuditRetentionDays(Number(au?.retentionDays ?? 90))
+          setAuditMaxRecords(Number(au?.maxRecords ?? 10000))
         }
       } catch (err: any) {
         console.error("RPC Error (save_settings):", err)
@@ -594,6 +635,87 @@ export default Plugin.define({
       } finally {
         setHistoryCleanupBusy(false)
       }
+    }
+
+    /** Загрузка списка секретов (имена + превью, без значений). */
+    async function loadSecretsGui() {
+      setSecretsBusy(true)
+      try {
+        const result = await rpc.list_secrets({})
+        setSecretsList(result?.secrets ?? [])
+      } catch (err: any) {
+        console.error("RPC Error (list_secrets):", err)
+      } finally {
+        setSecretsBusy(false)
+      }
+    }
+
+    /** Сохранить/создать секрет. */
+    async function handleSaveSecret() {
+      const name = secretName().trim()
+      const value = secretValue()
+      if (!name || !value) return
+      setSecretsBusy(true)
+      try {
+        const result = await rpc.save_secret({ name, value })
+        if (result?.success) {
+          setSecretName("")
+          setSecretValue("")
+          ctx.toast.show({ title: "Секрет сохранён", variant: "success", description: result.message })
+          void loadSecretsGui()
+        } else {
+          ctx.toast.show({ title: "Секрет не сохранён", variant: "error", description: result?.message ?? "" })
+        }
+      } catch (err: any) {
+        console.error("RPC Error (save_secret):", err)
+        ctx.toast.show({ title: "Секрет не сохранён", variant: "error", description: errorMessage(err) })
+      } finally {
+        setSecretsBusy(false)
+      }
+    }
+
+    /** Удалить секрет по имени. */
+    async function handleDeleteSecret(name: string) {
+      setSecretsBusy(true)
+      try {
+        const result = await rpc.delete_secret({ name })
+        if (result?.success) {
+          ctx.toast.show({ title: "Секрет удалён", variant: "success", description: result?.message ?? "" })
+          void loadSecretsGui()
+        } else {
+          ctx.toast.show({ title: "Секрет не удалён", variant: "error", description: result?.message ?? "" })
+        }
+      } catch (err: any) {
+        console.error("RPC Error (delete_secret):", err)
+        ctx.toast.show({ title: "Секрет не удалён", variant: "error", description: errorMessage(err) })
+      } finally {
+        setSecretsBusy(false)
+      }
+    }
+
+    /** Загрузка журнала аудита с фильтрами. */
+    async function loadAuditGui() {
+      setAuditBusy(true)
+      try {
+        const result = await rpc.get_audit({
+          action: auditFilterAction() || undefined,
+          actor: auditFilterActor() || undefined,
+          target: auditFilterTarget() || undefined,
+          limit: 200,
+        })
+        if (result?.success) {
+          setAuditRecords(result?.records ?? [])
+        }
+      } catch (err: any) {
+        console.error("RPC Error (get_audit):", err)
+      } finally {
+        setAuditBusy(false)
+      }
+    }
+
+    /** Сохраняет настройки аудита. */
+    async function saveAuditSettings() {
+      await persistSettings({ audit: { enabled: auditRetentionEnabled(), retentionDays: auditRetentionDays(), maxRecords: auditMaxRecords() } })
     }
 
     /** Кнопка «🧪 Тестовое уведомление». */
@@ -2765,6 +2887,65 @@ export default Plugin.define({
                     </div>
                   </div>
 
+                  {/* 🔐 Секреты (Спринт 26) */}
+                  <div style="width:100%;max-width:700px;box-sizing:border-box;margin-top:8px;background:#1e1e1e;border:1px solid #333;border-radius:10px;overflow:hidden">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px">
+                      <span style="font-size:12px;font-weight:600;color:#e0e0e0">🔐 Секреты</span>
+                      <span style="font-size:11px;color:#8e8e93">{secretsList().length}</span>
+                    </div>
+                    <div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:10px">
+                      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                        <input
+                          type="text"
+                          value={secretName()}
+                          placeholder="Имя секрета (A-Za-z0-9_.-)"
+                          onInput={(e) => setSecretName(e.currentTarget.value)}
+                          style="width:220px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                        />
+                        <input
+                          type="password"
+                          autocomplete="new-password"
+                          value={secretValue()}
+                          placeholder="Значение (не возвращается при чтении)"
+                          onInput={(e) => setSecretValue(e.currentTarget.value)}
+                          style="width:320px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                        />
+                        <button
+                          onClick={() => void handleSaveSecret()}
+                          disabled={secretsBusy() || !secretName().trim() || !secretValue()}
+                          style={secretsBusy() || !secretName().trim() || !secretValue()
+                            ? "padding:6px 12px;background:#666;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:12px;font-weight:500;opacity:0.6"
+                            : "padding:6px 12px;background:#007acc;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;opacity:1"}
+                        >
+                          {secretsBusy() ? "Сохранение..." : "💾 Сохранить"}
+                        </button>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;overflow:auto">
+                        {secretsList().map((item) => (
+                          <span
+                            key={item.name}
+                            style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:#252526;border:1px solid #333;border-radius:4px;font-size:11px;color:#e0e0e0"
+                          >
+                            <span style="font-weight:600;color:#569cd6">{item.name}</span>
+                            <span style="color:#ce9178">•••• {item.preview}</span>
+                            <button
+                              onClick={() => void handleDeleteSecret(item.name)}
+                              title="Удалить"
+                              style="padding:2px 6px;background:#c43b2b;color:white;border:none;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;line-height:1"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                        {secretsList().length === 0 && (
+                          <span style="font-size:11px;color:#8e8e93">Секретов нет. Значения хранятся зашифрованно в secrets.json.</span>
+                        )}
+                      </div>
+                      <div style="font-size:11px;color:#8e8e93">
+                        В задачах используйте ссылку <code style="color:#dcdcaa">${"{secret:NAME}"}</code> — значение подставляется из хранилища при запуске и маскируется в логах.
+                      </div>
+                    </div>
+                  </div>
                   {/* Уведомления о матрицах (Спринт 20) */}
                   <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
                     <div style="font-size:12px;color:#e0e0e0;font-weight:600">Матрицы</div>
@@ -2962,6 +3143,148 @@ export default Plugin.define({
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* 📜 Журнал аудита (Спринт 26) */}
+            <div style="width:100%;max-width:900px;box-sizing:border-box;margin-top:8px;background:#1e1e1e;border:1px solid #333;border-radius:10px;overflow:hidden">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px">
+                <button
+                  onClick={() => setAuditCollapsed(!auditCollapsed())}
+                  style="display:flex;align-items:center;gap:8px;background:transparent;border:none;color:#e0e0e0;font-size:12px;font-weight:600;cursor:pointer;text-align:left;padding:0"
+                >
+                  <span>📜 Журнал аудита</span>
+                  <span style="font-size:11px;font-weight:400;color:#8e8e93">{auditRecords().length}</span>
+                  <span style="font-size:11px;color:#8e8e93">{auditCollapsed() ? "▾" : "▴"}</span>
+                </button>
+              </div>
+
+              {!auditCollapsed() && (
+                <div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Действие</label>
+                    <input
+                      type="text"
+                      value={auditFilterAction()}
+                      placeholder="например task.create"
+                      onInput={(e) => setAuditFilterAction(e.currentTarget.value)}
+                      onChange={() => void loadAuditGui()}
+                      style="width:150px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                    />
+                    <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Источник</label>
+                    <input
+                      type="text"
+                      value={auditFilterActor()}
+                      placeholder="mcp/gui/http"
+                      onInput={(e) => setAuditFilterActor(e.currentTarget.value)}
+                      onChange={() => void loadAuditGui()}
+                      style="width:110px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                    />
+                    <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Цель</label>
+                    <input
+                      type="text"
+                      value={auditFilterTarget()}
+                      placeholder="имя задачи/секрета"
+                      onInput={(e) => setAuditFilterTarget(e.currentTarget.value)}
+                      onChange={() => void loadAuditGui()}
+                      style="width:180px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                    />
+                    <button
+                      onClick={() => void loadAuditGui()}
+                      disabled={auditBusy()}
+                      style={auditBusy()
+                        ? "padding:6px 12px;background:#666;color:white;border:none;border-radius:6px;cursor:not-allowed;font-size:12px;font-weight:500;opacity:0.6"
+                        : "padding:6px 12px;background:#007acc;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;opacity:1"}
+                    >
+                      {auditBusy() ? "Загрузка..." : "Обновить"}
+                    </button>
+                  </div>
+                  <div style="width:100%;overflow:auto;border:1px solid #333;border-radius:6px;background:#0f0f0f">
+                    <table style="width:100%;border-collapse:collapse;font-size:11px">
+                      <thead>
+                        <tr style="border-bottom:1px solid #333">
+                          <th style="text-align:left;padding:6px 8px;color:#8e8e93">Время</th>
+                          <th style="text-align:left;padding:6px 8px;color:#8e8e93">Действие</th>
+                          <th style="text-align:left;padding:6px 8px;color:#8e8e93">Цель</th>
+                          <th style="text-align:left;padding:6px 8px;color:#8e8e93">Источник</th>
+                          <th style="text-align:left;padding:6px 8px;color:#8e8e93">Автор</th>
+                          <th style="text-align:left;padding:6px 8px;color:#8e8e93">Удалён с</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {auditRecords().map((r) => (
+                          <tr key={r.id} style="border-bottom:1px solid #222">
+                            <td style="padding:5px 8px;color:#e0e0e0;white-space:nowrap">{new Date(r.ts).toLocaleString()}</td>
+                            <td style="padding:5px 8px;color:#569cd6">{r.action}</td>
+                            <td style="padding:5px 8px;color:#e0e0e0;white-space:nowrap">{r.targetType ?? ""}: {r.target ?? "—"}</td>
+                            <td style="padding:5px 8px;color:#ce9178">{r.source ?? "—"}</td>
+                            <td style="padding:5px 8px;color:#e0e0e0">{r.actor}</td>
+                            <td style="padding:5px 8px;color:#8e8e93;white-space:nowrap">{r.remote ?? "—"}</td>
+                          </tr>
+                        ))}
+                        {auditRecords().length === 0 && (
+                          <tr>
+                            <td colspan="6" style="padding:10px 8px;color:#8e8e93;text-align:center">Записей аудита нет.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style="font-size:11px;color:#8e8e93">
+                    Записываются мутации задач, настроек, шаблонов, профилей, рабочих зон, секретов, импорта и очистки истории. Детали маскируются (секреты заменены на <code style="color:#dcdcaa">***</code>).
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 🧹 Настройки аудита (ретеншн) */}
+            <div style="width:100%;max-width:700px;box-sizing:border-box;margin-top:8px;background:#1e1e1e;border:1px solid #333;border-radius:10px;overflow:hidden">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px">
+                <span style="font-size:12px;font-weight:600;color:#e0e0e0">Журнал аудита — хранение</span>
+              </div>
+              <div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                    <input
+                      type="checkbox"
+                      checked={auditRetentionEnabled()}
+                      onChange={(e) => {
+                        setAuditRetentionEnabled(e.currentTarget.checked)
+                        void saveAuditSettings()
+                      }}
+                      style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                    />
+                    Включить аудит
+                  </label>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Удалять записи старше, дней</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={auditRetentionDays()}
+                    onChange={(e) => {
+                      setAuditRetentionDays(Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)))
+                      void saveAuditSettings()
+                    }}
+                    style="width:80px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                  />
+                  <span style="font-size:11px;color:#8e8e93">0 = не удалять по возрасту</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <label style="font-size:12px;color:#e0e0e0;white-space:nowrap">Хранить не более записей</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={auditMaxRecords()}
+                    onChange={(e) => {
+                      setAuditMaxRecords(Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)))
+                      void saveAuditSettings()
+                    }}
+                    style="width:80px;padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                  />
+                  <span style="font-size:11px;color:#8e8e93">0 = без ограничения</span>
+                </div>
+              </div>
             </div>
 
             {/* 📦 Multi-repo workspaces */}

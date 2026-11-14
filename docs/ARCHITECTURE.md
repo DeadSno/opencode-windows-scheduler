@@ -120,7 +120,7 @@ from their clones instead of their own last run.
 
 | Path | Role |
 | --- | --- |
-| `src/index.ts` | Plugin lifecycle, 12 agent tools, RPC handlers, task CRUD, view assembly |
+| `src/index.ts` | Plugin lifecycle, 24 agent tools, RPC handlers, task CRUD, view assembly |
 | `src/rpc.ts` | JSON-schema contracts for every RPC method |
 | `src/gui.tsx` | OpenCode sidebar panel (SolidJS, built to `gui-experimental.cjs`) |
 | `src/server.ts` | Local web dashboard HTTP server and HTML rendering |
@@ -129,10 +129,12 @@ from their clones instead of their own last run.
 | `src/profiles.ts` | Profile directory resolution: per-profile plugin dir (base for `default`, `<base>/profiles/<name>` for named profiles); profile name, marker, port, create/delete/switch |
 | `src/workspaces.ts` | Workspace registry and path validation; env pairs and `.env` file resolution with secret masking |
 | `src/templates.ts` | Reusable task templates |
-| `src/settings.ts` | Plugin settings: notifications and history retention |
+| `src/settings.ts` | Plugin settings: notifications, history retention, audit |
 | `src/notifications.ts` | Multi-channel delivery (webhook, Telegram, native OS) with retries/backoff, templates, task filters, quiet hours, matrix and stuck-clone notifications, daily/weekly digest |
 | `src/core/telegram.ts` | Telegram Bot API `sendMessage`: parse-mode escaping, dashboard link, token validation and masking |
 | `src/core/native-notify.ts` | Native OS notifications: Windows Toast (PowerShell/WinRT), macOS `osascript`, Linux `notify-send`; no external dependency |
+| `src/core/secrets.ts` | Encrypted secret store (AES-256-GCM, `secrets.key` 0600, `${secret:NAME}` refs, redaction) |
+| `src/core/audit.ts` | SQLite audit journal (`audit_log`), redacted details, retention cleanup |
 | `src/history.ts` | History model and status types |
 | `src/version.ts` | Runtime plugin version (reads package.json) |
 | `src/core/retention.ts` | Daily history prune and incremental vacuum |
@@ -306,7 +308,7 @@ never requires a manual migration.
 
 | Interface | Audience | Entry point |
 | --- | --- | --- |
-| Agent tools | AI agent | 22 tools registered via `ctx.tool.transform` |
+| Agent tools | AI agent | 24 tools registered via `ctx.tool.transform` |
 | Agent skill | AI agent | `skills/scheduled-job-best-practices` |
 | RPC | Sidebar GUI | `src/rpc.ts` contracts, ~30 methods |
 | Sidebar GUI | Human | `gui-experimental.cjs` |
@@ -320,8 +322,14 @@ never requires a manual migration.
 - `allowedTools` / `deniedTools` are **metadata passed to the run**, not a sandbox.
   They are recorded in history for audit, but they do not constrain `opencode` at the
   OS level.
-- Secrets are stored in plain text in the SQLite database and in wrapper files. Use
-  environment variables or a secret manager for anything sensitive.
+- Task prompts, hooks and Quality Gate scripts are **plain text** executed with your
+  user privileges; only secrets (in `secrets.json`, AES-256-GCM) are encrypted.
+  Workspace `env` can reference secrets as `${secret:NAME}`; values are masked in
+  logs, history and audit. Treat task creation like granting shell access.
+- Secrets are stored encrypted in `<PLUGIN_DIR>/secrets.json` (AES-256-GCM) with a
+  32-byte key file `secrets.key` (rights 0600). Workspace `env` can reference them
+  as `${secret:NAME}`; values are substituted at run time and masked in logs,
+  history and audit.
 - Workspace paths are validated, but hooks are not sandboxed: only schedule jobs from
   repositories you trust.
 

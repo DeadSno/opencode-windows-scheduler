@@ -178,6 +178,16 @@ export interface IntegrationSettings {
   hooks: HookSettings;
 }
 
+/** Настройки журнала аудита (Спринт 26). */
+export interface AuditSettings {
+  /** Вести журнал мутаций. */
+  enabled: boolean;
+  /** Сколько дней хранить записи; 0 — без ограничения по времени. */
+  retentionDays: number;
+  /** Максимум записей; старые удаляются первыми. */
+  maxRecords: number;
+}
+
 /**
  * Глобальные настройки плагина, которые меняются из GUI.
  * Хранятся в settings.json рядом с tasks.json / history.json.
@@ -193,6 +203,8 @@ export interface SchedulerSettings {
   history: HistorySettings;
   /** Внешние интеграции: входящие webhook-триггеры. */
   integrations: IntegrationSettings;
+  /** Журнал аудита мутаций (Спринт 26). */
+  audit: AuditSettings;
 }
 
 export const SETTINGS_FILE = path.join(PLUGIN_DIR, "settings.json");
@@ -212,6 +224,38 @@ export const DEFAULT_HOOK_MAX_BODY_BYTES = 256 * 1024;
 export const DEFAULT_HOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
 const MAX_HOOK_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_HOOK_CREDENTIAL_LENGTH = 512;
+
+/** Аудит (Спринт 26): включён, 90 дней и не больше 10 000 записей. */
+export const DEFAULT_AUDIT_RETENTION_DAYS = 90;
+export const DEFAULT_AUDIT_MAX_RECORDS = 10_000;
+
+/** Значения аудита по умолчанию. */
+export function defaultAuditSettings(): AuditSettings {
+  return {
+    enabled: true,
+    retentionDays: DEFAULT_AUDIT_RETENTION_DAYS,
+    maxRecords: DEFAULT_AUDIT_MAX_RECORDS,
+  };
+}
+
+/** Приводит настройки аудита к безопасному виду. */
+function normalizeAuditSettings(
+  value: unknown,
+  fallback: AuditSettings
+): AuditSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ...fallback };
+  }
+  const raw = value as Partial<AuditSettings>;
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    retentionDays: normalizeRetentionLimit(
+      raw.retentionDays,
+      fallback.retentionDays
+    ),
+    maxRecords: normalizeRetentionLimit(raw.maxRecords, fallback.maxRecords),
+  };
+}
 
 /** Значения интеграций по умолчанию: хуки выключены, подпись обязательна. */
 export function defaultIntegrations(): IntegrationSettings {
@@ -636,6 +680,7 @@ export async function loadSettings(): Promise<SchedulerSettings> {
   const fallbackNotifications = defaultNotifications();
   const fallbackHistory = defaultHistorySettings();
   const fallbackIntegrations = defaultIntegrations();
+  const fallbackAudit = defaultAuditSettings();
   try {
     const raw = await fs.readFile(SETTINGS_FILE, "utf8");
     const parsed = JSON.parse(raw) as Partial<SchedulerSettings> | null;
@@ -657,6 +702,7 @@ export async function loadSettings(): Promise<SchedulerSettings> {
         parsed?.integrations,
         fallbackIntegrations
       ),
+      audit: normalizeAuditSettings(parsed?.audit, fallbackAudit),
     };
   } catch {
     return {
@@ -665,6 +711,7 @@ export async function loadSettings(): Promise<SchedulerSettings> {
       notifications: fallbackNotifications,
       history: fallbackHistory,
       integrations: fallbackIntegrations,
+      audit: fallbackAudit,
     };
   }
 }
@@ -695,6 +742,10 @@ export async function saveSettings(
       patch.integrations !== undefined
         ? normalizeIntegrations(patch.integrations, current.integrations)
         : current.integrations,
+    audit:
+      patch.audit !== undefined
+        ? normalizeAuditSettings(patch.audit, current.audit)
+        : current.audit,
   };
 
   // Удобство: при включении хуков без явных учётных данных генерируем их,

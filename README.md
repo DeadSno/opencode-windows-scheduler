@@ -39,8 +39,8 @@ Want to see it without installing OpenCode? `node scripts/demo-dashboard.mjs` st
 | Triggers | cron, one-shot (`triggerType: "once"`), file change (chokidar), MCP events, incoming webhooks (`POST /api/hooks/:task` with HMAC) |
 | Multi-repo | workspaces with path validation, per-workspace runs, matrix over one parent task |
 | Observability | SQLite history (success / error / timeout / partial / running), metrics (duration, tokens, cost), JSONL run logs with `/api/logs`, Prometheus `/metrics`, OTLP export, per-task logs, local web dashboard with 14-day analytics, history retention and CSV/JSON export |
-| Operations | dry-run preview, export/import JSON, templates, multi-channel notifications (webhook, Telegram, native OS toasts), quiet hours, digest, settings |
-| Interfaces | OpenCode GUI panel, web dashboard, 22 agent tools, built-in agent skill |
+| Operations | dry-run preview, export/import JSON, templates, multi-channel notifications (webhook, Telegram, native OS toasts), quiet hours, digest, encrypted secrets (`${secret:NAME}`), audit log, settings |
+| Interfaces | OpenCode GUI panel, web dashboard, 24 agent tools, built-in agent skill |
 
 ## Install
 
@@ -173,7 +173,7 @@ Job wrappers run `opencode run` in the task working directory, so project MCP se
 npm install
 npm run build        # tsc
 npm run build:gui    # vite
-npm test             # 27 test suites, 500+ checks
+npm test             # 29 test suites, 500+ checks
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
@@ -204,6 +204,12 @@ No. Windows Toast (PowerShell/WinRT), macOS Notification Center (`osascript`) an
 
 **Can I silence notifications at night?**
 Yes. Set `notifications.quietHours` (`enabled`, `from`, `to` in `HH:MM`). During the window successful and `partial` runs are suppressed, while failures and timeouts are always delivered.
+
+**How do I store secrets?**
+Use `manage_secrets` (or the «🔐 Секреты» panel in the sidebar) to create an encrypted secret. Secrets are stored in `<PLUGIN_DIR>/secrets.json` with AES-256-GCM and a key file (`secrets.key`, rights 0600). In task `env`, reference a secret as `${secret:NAME}` — the value is substituted at run time and masked in logs, history and audit. The secret name can also be set via `manage_settings` → `notifications.telegram.botToken` left empty and `OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN` env var instead.
+
+**Can I see who changed what?**
+Yes. The audit log (`get_audit_log` tool, «📜 Журнал аудита» panel, `GET /api/audit`) records every mutation — task create/update/delete/run, settings, templates, profiles, workspaces, secrets, import, history cleanup — with actor (mcp/gui/http), source, timestamp and redacted details. Retention defaults to 90 days / 10 000 records.
 
 **How is this different from `experimental.schedules`?**
 The built-in scheduler runs jobs while OpenCode is open. This plugin uses the native OS scheduler and adds DAG pipelines, matrix builds, quality gates, webhooks and observability.

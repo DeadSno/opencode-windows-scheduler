@@ -67,6 +67,21 @@ CREATE TABLE IF NOT EXISTS workspaces (
   env_file TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target TEXT,
+  actor TEXT NOT NULL,
+  source TEXT,
+  details_json TEXT,
+  remote TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, ts DESC);
 `;
 
 interface SchemaDb {

@@ -441,6 +441,41 @@ const NotificationSettingsSchema = {
       },
       required: ["include", "exclude"],
     },
+    telegram: {
+      type: "object" as const,
+      properties: {
+        enabled: { type: "boolean" },
+        botToken: { type: "string" },
+        chatId: { type: "string" },
+        parseMode: {
+          type: "string",
+          enum: ["", "HTML", "Markdown", "MarkdownV2"],
+        },
+        disableNotification: { type: "boolean" },
+        messageThreadId: { type: ["number", "null"] },
+        includeDashboardLink: { type: "boolean" },
+        apiBase: { type: "string" },
+      },
+      required: ["enabled"],
+    },
+    native: {
+      type: "object" as const,
+      properties: {
+        enabled: { type: "boolean" },
+        sound: { type: "boolean" },
+      },
+      required: ["enabled"],
+    },
+    quietHours: {
+      type: "object" as const,
+      properties: {
+        enabled: { type: "boolean" },
+        from: { type: "string" },
+        to: { type: "string" },
+      },
+      required: ["enabled", "from", "to"],
+    },
+    dashboardUrl: { type: "string" },
     matrix: {
       type: "object" as const,
       properties: {
@@ -477,6 +512,17 @@ const HistorySettingsSchema = {
   required: ["retentionDays", "maxRecords"],
 } as const;
 
+/** Журнал аудита (Спринт 26). */
+const AuditSettingsSchema = {
+  type: "object" as const,
+  properties: {
+    enabled: { type: "boolean" },
+    retentionDays: { type: "number" },
+    maxRecords: { type: "number" },
+  },
+  required: ["enabled", "retentionDays", "maxRecords"],
+} as const;
+
 const GetSettingsOutput = {
   type: "object" as const,
   properties: {
@@ -484,6 +530,7 @@ const GetSettingsOutput = {
     winterMode: { type: "boolean" },
     notifications: NotificationSettingsSchema,
     history: HistorySettingsSchema,
+    audit: AuditSettingsSchema,
   },
   required: ["maxConcurrent", "winterMode", "notifications"],
 } as const;
@@ -495,6 +542,7 @@ const SaveSettingsInput = {
     winterMode: { type: "boolean" },
     notifications: NotificationSettingsSchema,
     history: HistorySettingsSchema,
+    audit: AuditSettingsSchema,
   },
   additionalProperties: false,
 } as const;
@@ -507,6 +555,7 @@ const SaveSettingsOutput = {
     winterMode: { type: "boolean" },
     notifications: NotificationSettingsSchema,
     history: HistorySettingsSchema,
+    audit: AuditSettingsSchema,
   },
   required: ["success", "maxConcurrent", "winterMode", "notifications"],
 } as const;
@@ -589,6 +638,110 @@ const SendDigestOutput = {
     message: { type: "string" },
   },
   required: ["success", "message"],
+} as const;
+
+/** Секрет: имя и маскированный превью, значение никогда не возвращается. */
+const SecretItem = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+    preview: { type: "string" },
+    updatedAt: { type: "string" },
+  },
+  required: ["name", "preview"],
+} as const;
+
+const ListSecretsInput = {
+  type: "object" as const,
+  properties: {},
+  additionalProperties: false,
+} as const;
+
+const ListSecretsOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    secrets: { type: "array", items: SecretItem },
+  },
+  required: ["success", "secrets"],
+} as const;
+
+const SaveSecretInput = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+    value: { type: "string" },
+  },
+  required: ["name", "value"],
+  additionalProperties: false,
+} as const;
+
+const SaveSecretOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+    secret: SecretItem,
+  },
+  required: ["success"],
+} as const;
+
+const DeleteSecretInput = {
+  type: "object" as const,
+  properties: {
+    name: { type: "string" },
+  },
+  required: ["name"],
+  additionalProperties: false,
+} as const;
+
+const DeleteSecretOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    message: { type: "string" },
+  },
+  required: ["success", "message"],
+} as const;
+
+/** Запись журнала аудита (Спринт 26). */
+const AuditRecordSchema = {
+  type: "object" as const,
+  properties: {
+    id: { type: "number" },
+    ts: { type: "string" },
+    action: { type: "string" },
+    targetType: { type: ["string", "null"] },
+    target: { type: ["string", "null"] },
+    actor: { type: "string" },
+    source: { type: ["string", "null"] },
+    details: {},
+    remote: { type: ["string", "null"] },
+  },
+  required: ["id", "ts", "action", "actor"],
+} as const;
+
+const GetAuditInput = {
+  type: "object" as const,
+  properties: {
+    action: { type: "string" },
+    target: { type: "string" },
+    actor: { type: "string" },
+    since: { type: "string" },
+    until: { type: "string" },
+    limit: { type: "number" },
+  },
+  additionalProperties: false,
+} as const;
+
+const GetAuditOutput = {
+  type: "object" as const,
+  properties: {
+    success: { type: "boolean" },
+    records: { type: "array", items: AuditRecordSchema },
+    total: { type: "number" },
+  },
+  required: ["success", "records", "total"],
 } as const;
 
 const TemplateItem = {
@@ -1230,6 +1383,10 @@ export const SchedulerRpc = Rpc.define({
       input: SendDigestInput,
       output: SendDigestOutput,
     },
+    list_secrets: { input: ListSecretsInput, output: ListSecretsOutput },
+    save_secret: { input: SaveSecretInput, output: SaveSecretOutput },
+    delete_secret: { input: DeleteSecretInput, output: DeleteSecretOutput },
+    get_audit: { input: GetAuditInput, output: GetAuditOutput },
   },
   events: {},
 });

@@ -40,6 +40,7 @@ import { SchedulerRpc } from "./rpc.js";
 import { latestHistoryByTask, loadHistory, loadMetrics } from "./history.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import type {
+  AuditSettings,
   HistorySettings,
   IntegrationSettings,
   NotificationSettings,
@@ -99,6 +100,18 @@ import {
   writeWorkspaceEnvFile,
   maskEnvForLog,
 } from "./workspaces.js";
+import {
+  deleteSecret,
+  hasSecret,
+  listSecrets,
+  setSecret,
+} from "./core/secrets.js";
+import {
+  cleanupAuditLog,
+  readAuditLog,
+  recordAudit,
+} from "./core/audit.js";
+import type { AuditEntryInput } from "./core/audit.js";
 
 // Путь к вспомогательному node-скрипту записи истории/метрик (dist/core/record-history.js).
 const require = createRequire(import.meta.url);
@@ -695,6 +708,10 @@ export const manageSettingsSchema = z.object({
     .describe(
       "Integration settings patch (hooks: enabled, token, secret, requireSignature, maxBodyBytes, timestampToleranceSeconds)."
     ),
+  audit: z
+    .any()
+    .optional()
+    .describe("Audit log settings patch (enabled, retentionDays, maxRecords)."),
 });
 
 /** manage_templates — пользовательские шаблоны задач. */
@@ -772,6 +789,31 @@ export const emitEventSchema = z.object({
   payload: z.any().optional().describe("Event payload passed to trigger filters."),
 });
 
+/** manage_secrets — зашифрованное хранилище секретов (Спринт 26). */
+export const manageSecretsSchema = z.object({
+  action: z
+    .enum(["list", "set", "delete"])
+    .describe("list — secret names and previews; set — create or replace; delete — remove by name."),
+  name: z
+    .string()
+    .optional()
+    .describe("Secret name ([A-Za-z0-9_.-], max 64 chars). Required for set/delete."),
+  value: z.string().optional().describe("Secret value (required for set). Never returned by list."),
+});
+
+/** get_audit_log — журнал мутаций задач и настроек (Спринт 26). */
+export const getAuditLogSchema = z.object({
+  action: z.string().optional().describe("Filter by action, for example task.create."),
+  target: z.string().optional().describe("Filter by target name or id."),
+  actor: z
+    .string()
+    .optional()
+    .describe("Filter by actor: mcp (agent), gui (dashboard), http (webhook/API)."),
+  since: z.string().optional().describe("ISO timestamp lower bound."),
+  until: z.string().optional().describe("ISO timestamp upper bound."),
+  limit: z.number().int().min(1).max(5000).optional().describe("Max records (default 200)."),
+});
+
 type ScheduleArgs = z.infer<typeof scheduleTaskSchema>;
 type ListArgs = z.infer<typeof listTasksSchema>;
 type DeleteArgs = z.infer<typeof deleteTaskSchema>;
@@ -794,6 +836,8 @@ type NotificationArgs = z.infer<typeof sendNotificationSchema>;
 type DashboardInfoArgs = z.infer<typeof getDashboardInfoSchema>;
 type CleanupHistoryArgs = z.infer<typeof cleanupHistorySchema>;
 type EmitEventArgs = z.infer<typeof emitEventSchema>;
+type SecretsArgs = z.infer<typeof manageSecretsSchema>;
+type AuditLogArgs = z.infer<typeof getAuditLogSchema>;
 
 /**
  * Директория проекта, в которой запущен OpenCode. Используется как рабочая
@@ -1966,13 +2010,14 @@ const manageSettingsExecute = wrapExecute<SettingsArgs>(async (args) => {
     args.winterMode === undefined &&
     args.notifications === undefined &&
     args.history === undefined &&
-    args.integrations === undefined
+    args.integrations === undefined &&
+    args.audit === undefined
   ) {
     return {
       content: JSON.stringify({
         success: false,
         error:
-          "Для action=update передайте хотя бы одно поле: maxConcurrent, winterMode, notifications, history или integrations.",
+          "Для action=update передайте хотя бы одно поле: maxConcurrent, winterMode, notifications, history, integrations или audit.",
         settings: current,
       }),
     };
@@ -1984,6 +2029,7 @@ const manageSettingsExecute = wrapExecute<SettingsArgs>(async (args) => {
     notifications: args.notifications as NotificationSettings | undefined,
     history: args.history as HistorySettings | undefined,
     integrations: args.integrations as IntegrationSettings | undefined,
+    audit: args.audit as AuditSettings | undefined,
   });
   return { content: JSON.stringify({ success: true, settings }) };
 });
@@ -2243,6 +2289,197 @@ const emitEventExecute = wrapExecute<EmitEventArgs>(async (args) => {
   };
 });
 
+/** manage_secrets — зашифрованное хранилище секретов. */
+const manageSecretsExecute = wrapExecute<SecretsArgs>(async (args) => {
+  if (args.action === "list") {
+    return { content: JSON.stringify({ success: true, secrets: listSecrets() }) };
+  }
+
+  const name = (args.name ?? "").trim();
+  if (!name) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: "Для set/delete нужно имя секрета.",
+      }),
+    };
+  }
+
+  if (args.action === "delete") {
+    const existed = hasSecret(name);
+    deleteSecret(name);
+    return {
+      content: JSON.stringify({
+        success: existed,
+        message: existed
+          ? `Секрет ${name} удалён.`
+          : `Секрет ${name} не найден.`,
+      }),
+    };
+  }
+
+  const value = args.value;
+  if (typeof value !== "string" || value.length === 0) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: "Для action=set нужно непустое значение value.",
+      }),
+    };
+  }
+
+  const item = setSecret(name, value);
+  return {
+    content: JSON.stringify({
+      success: true,
+      message: `Секрет ${item.name} сохранён в зашифрованном виде.`,
+      secret: item,
+    }),
+  };
+});
+
+/** get_audit_log — чтение журнала мутаций. */
+const getAuditLogExecute = wrapExecute<AuditLogArgs>(async (args) => {
+  const result = readAuditLog({
+    action: args.action,
+    target: args.target,
+    actor: args.actor,
+    since: args.since,
+    until: args.until,
+    limit: args.limit,
+  });
+  return { content: JSON.stringify({ success: true, ...result }) };
+});
+
+/**
+ * Оборачивает execute инструмента, записывая успешную мутацию в audit log.
+ * Аудит не должен ломать сам инструмент, поэтому ошибки проглатываются.
+ */
+function withAudit<A>(
+  toolName: string,
+  describe: (args: A) => Omit<AuditEntryInput, "actor"> | null,
+  execute: (args: A, context: Tool.Context) => Promise<Tool.Result>
+): (args: A, context: Tool.Context) => Promise<Tool.Result> {
+  return async (args: A, context: Tool.Context) => {
+    const result = await execute(args, context);
+    try {
+      const raw = String((result as any)?.content ?? "");
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed?.success === false) return result;
+      const entry = describe(args);
+      if (entry) {
+        recordAudit({ ...entry, actor: "mcp", source: toolName });
+      }
+    } catch {
+      // Аудит — вспомогательная функция: не мешает основной операции.
+    }
+    return result;
+  };
+}
+
+/** Правила аудита для RPC-методов GUI (Спринт 26). */
+const RPC_AUDIT_RULES: Record<
+  string,
+  {
+    action: string;
+    targetType: string;
+    target: (input: any) => string;
+  }
+> = {
+  create_task: { action: "task.create", targetType: "task", target: (i) => i.name ?? "" },
+  update_task: { action: "task.update", targetType: "task", target: (i) => i.name ?? "" },
+  delete_task: { action: "task.delete", targetType: "task", target: (i) => i.name ?? "" },
+  run_task: { action: "task.run", targetType: "task", target: (i) => i.name ?? "" },
+  pause_task: { action: "task.pause", targetType: "task", target: (i) => i.name ?? "" },
+  resume_task: { action: "task.resume", targetType: "task", target: (i) => i.name ?? "" },
+  cancel_matrix: { action: "matrix.cancel", targetType: "matrix", target: (i) => i.name ?? "" },
+  cleanup_matrix_orphans: {
+    action: "matrix.cleanup",
+    targetType: "matrix",
+    target: () => "orphans",
+  },
+  cleanup_history: {
+    action: "history.cleanup",
+    targetType: "history",
+    target: () => "runs",
+  },
+  emit_event: { action: "event.emit", targetType: "event", target: (i) => i.eventName ?? "" },
+  add_workspace: {
+    action: "workspace.add",
+    targetType: "workspace",
+    target: (i) => i.name ?? i.path ?? "",
+  },
+  update_workspace: {
+    action: "workspace.update",
+    targetType: "workspace",
+    target: (i) => i.id ?? "",
+  },
+  delete_workspace: {
+    action: "workspace.delete",
+    targetType: "workspace",
+    target: (i) => i.id ?? "",
+  },
+  set_profile: { action: "profile.switch", targetType: "profile", target: (i) => i.name ?? "" },
+  create_profile: {
+    action: "profile.create",
+    targetType: "profile",
+    target: (i) => i.name ?? "",
+  },
+  delete_profile: {
+    action: "profile.delete",
+    targetType: "profile",
+    target: (i) => i.name ?? "",
+  },
+  import_tasks: { action: "tasks.import", targetType: "tasks", target: () => "snapshot" },
+  save_settings: { action: "settings.update", targetType: "settings", target: () => "global" },
+  save_template: {
+    action: "template.save",
+    targetType: "template",
+    target: (i) => i.id ?? i.name ?? "",
+  },
+  delete_template: {
+    action: "template.delete",
+    targetType: "template",
+    target: (i) => i.id ?? "",
+  },
+  save_secret: { action: "secret.set", targetType: "secret", target: (i) => i.name ?? "" },
+  delete_secret: { action: "secret.delete", targetType: "secret", target: (i) => i.name ?? "" },
+};
+
+/**
+ * Оборачивает RPC-обработчики GUI: успешные мутации попадают в audit log
+ * с actor=gui. Ошибки аудита не влияют на ответ GUI.
+ */
+function withRpcAudit<T extends Record<string, (...args: any[]) => any>>(handlers: T): T {
+  const wrapped: Record<string, (...args: any[]) => any> = {};
+  for (const [name, handler] of Object.entries(handlers)) {
+    const rule = RPC_AUDIT_RULES[name];
+    if (!rule || typeof handler !== "function") {
+      wrapped[name] = handler;
+      continue;
+    }
+    wrapped[name] = async (...args: any[]) => {
+      const input = args[0] ?? {};
+      const result = await handler(...args);
+      try {
+        if ((result as any)?.success !== false) {
+          recordAudit({
+            action: rule.action,
+            targetType: rule.targetType,
+            target: rule.target(input),
+            actor: "gui",
+            source: name,
+          });
+        }
+      } catch {
+        // Журнал не должен ломать GUI-операцию.
+      }
+      return result;
+    };
+  }
+  return wrapped as T;
+}
+
 /**
  * Менеджер файловых триггеров живёт на уровне модуля, чтобы его можно было
  * обновлять после создания/изменения/удаления задачи. Раньше refresh()
@@ -2440,7 +2677,11 @@ export default Plugin.define({
           "Every run goes through a timeout + lock-file wrapper, so overlapping runs are skipped. " +
           "Without workingDirectory the task runs in the current project folder, where opencode run picks up the project's opencode.json and MCP servers.",
         options: { codemode: true },
-        execute: scheduleTaskExecute as any,
+        execute: withAudit<ScheduleArgs>(
+          "schedule_task",
+          (args) => ({ action: "task.create", targetType: "task", target: args.name }),
+          scheduleTaskExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2460,7 +2701,11 @@ export default Plugin.define({
           "Partially updates an existing task: omitted fields keep their current values, empty strings/arrays clear them. " +
           "Matrix changes are synced (clones are diffed, running clones are never touched); pass matrix: null to remove the matrix and its clones.",
         options: { codemode: true },
-        execute: updateTaskExecute as any,
+        execute: withAudit<UpdateArgs>(
+          "update_task",
+          (args) => ({ action: "task.update", targetType: "task", target: args.name }),
+          updateTaskExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2470,7 +2715,11 @@ export default Plugin.define({
           `Deletes a task from the scheduler (${scheduler.title}) by name. ` +
           "Deleting a matrix parent also deletes its clones and aggregator; deleting a single clone is refused (delete the whole matrix instead).",
         options: { codemode: true },
-        execute: deleteTaskExecute as any,
+        execute: withAudit<DeleteArgs>(
+          "delete_task",
+          (args) => ({ action: "task.delete", targetType: "task", target: args.name }),
+          deleteTaskExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2480,7 +2729,11 @@ export default Plugin.define({
           `Runs a task immediately in the scheduler (${scheduler.title}) for testing. ` +
           "Runs through the timeout + lock wrapper. For a matrix parent this starts the fan-out instead of the parent itself.",
         options: { codemode: true },
-        execute: runTaskNowExecute as any,
+        execute: withAudit<RunNowArgs>(
+          "run_task_now",
+          (args) => ({ action: "task.run", targetType: "task", target: args.name }),
+          runTaskNowExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2489,7 +2742,11 @@ export default Plugin.define({
         description:
           "Pauses a task in the OS scheduler. For a matrix parent every clone is paused (the parent itself never runs).",
         options: { codemode: true },
-        execute: pauseTaskExecute as any,
+        execute: withAudit<PauseArgs>(
+          "pause_task",
+          (args) => ({ action: "task.pause", targetType: "task", target: args.name }),
+          pauseTaskExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2498,7 +2755,11 @@ export default Plugin.define({
         description:
           "Resumes a previously paused task. For a matrix parent every clone is resumed.",
         options: { codemode: true },
-        execute: resumeTaskExecute as any,
+        execute: withAudit<ResumeArgs>(
+          "resume_task",
+          (args) => ({ action: "task.resume", targetType: "task", target: args.name }),
+          resumeTaskExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2535,7 +2796,18 @@ export default Plugin.define({
         description:
           "Manages multi-repo workspaces: list, add, update or delete. Tasks can target a workspace by id (cwd = workspace path) or fan out to several with matrix.workspaceIds.",
         options: { codemode: true },
-        execute: manageWorkspacesExecute as any,
+        execute: withAudit<WorkspacesArgs>(
+          "manage_workspaces",
+          (args) =>
+            args.action === "list"
+              ? null
+              : {
+                  action: `workspace.${args.action}`,
+                  targetType: "workspace",
+                  target: args.id || args.name || "",
+                },
+          manageWorkspacesExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2544,7 +2816,18 @@ export default Plugin.define({
         description:
           "Matrix lifecycle: results (aggregate status/counters of a matrix), cancel (cancel pending clones, stop running ones), cleanup (delete orphaned clones and aggregators whose parent is gone) or preview (expand a matrix config into clone names without creating anything).",
         options: { codemode: true },
-        execute: matrixControlExecute as any,
+        execute: withAudit<MatrixControlArgs>(
+          "matrix_control",
+          (args) =>
+            args.action === "cancel" || args.action === "cleanup"
+              ? {
+                  action: `matrix.${args.action}`,
+                  targetType: "matrix",
+                  target: args.name || "",
+                }
+              : null,
+          matrixControlExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2571,7 +2854,14 @@ export default Plugin.define({
         description:
           "Reads or updates global scheduler settings: maxConcurrent, winterMode, notifications (webhook, Telegram, native OS notifications, quiet hours, filters, matrix alerts, digest) and history retention. Updates are merged into the current settings.",
         options: { codemode: true },
-        execute: manageSettingsExecute as any,
+        execute: withAudit<SettingsArgs>(
+          "manage_settings",
+          (args) =>
+            args.action === "update"
+              ? { action: "settings.update", targetType: "settings", target: "global" }
+              : null,
+          manageSettingsExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2580,7 +2870,18 @@ export default Plugin.define({
         description:
           "Lists, saves or deletes reusable task templates (prompt, schedule, retries, Quality Gate, chains, triggers, tool restrictions).",
         options: { codemode: true },
-        execute: manageTemplatesExecute as any,
+        execute: withAudit<TemplatesArgs>(
+          "manage_templates",
+          (args) =>
+            args.action === "list"
+              ? null
+              : {
+                  action: `template.${args.action}`,
+                  targetType: "template",
+                  target: args.id || args.name || "",
+                },
+          manageTemplatesExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2589,7 +2890,18 @@ export default Plugin.define({
         description:
           "Lists, creates, switches or deletes isolated scheduler profiles (separate database, settings and dashboard port). Switching requires an OpenCode restart.",
         options: { codemode: true },
-        execute: manageProfilesExecute as any,
+        execute: withAudit<ProfilesArgs>(
+          "manage_profiles",
+          (args) =>
+            args.action === "list"
+              ? null
+              : {
+                  action: `profile.${args.action}`,
+                  targetType: "profile",
+                  target: args.name || "",
+                },
+          manageProfilesExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2598,7 +2910,14 @@ export default Plugin.define({
         description:
           "Exports all tasks as a portable JSON snapshot or imports tasks from such a snapshot, recreating them in the OS scheduler.",
         options: { codemode: true },
-        execute: transferTasksExecute as any,
+        execute: withAudit<TransferArgs>(
+          "transfer_tasks",
+          (args) =>
+            args.action === "import"
+              ? { action: "tasks.import", targetType: "tasks", target: "snapshot" }
+              : null,
+          transferTasksExecute as any
+        ) as any,
       });
 
       editor.add({
@@ -2625,7 +2944,43 @@ export default Plugin.define({
         description:
           "Deletes old run history by age and/or record cap, using the stored retention policy unless overridden.",
         options: { codemode: true },
-        execute: cleanupHistoryExecute as any,
+        execute: withAudit<CleanupHistoryArgs>(
+          "cleanup_history",
+          () => ({ action: "history.cleanup", targetType: "history", target: "runs" }),
+          cleanupHistoryExecute as any
+        ) as any,
+      });
+
+      editor.add({
+        name: "manage_secrets",
+        input: manageSecretsSchema,
+        description:
+          "Manages the encrypted secret store: list (names and masked previews), set (create or replace) or delete. " +
+          "Secrets are encrypted with AES-256-GCM at rest and referenced from workspace env as ${secret:NAME}; " +
+          "values are never returned by list and are redacted from logs and audit details.",
+        options: { codemode: true },
+        execute: withAudit<SecretsArgs>(
+          "manage_secrets",
+          (args) =>
+            args.action === "list"
+              ? null
+              : {
+                  action: `secret.${args.action}`,
+                  targetType: "secret",
+                  target: (args.name ?? "").trim(),
+                },
+          manageSecretsExecute as any
+        ) as any,
+      });
+
+      editor.add({
+        name: "get_audit_log",
+        input: getAuditLogSchema,
+        description:
+          "Returns the audit journal of task and settings mutations: who changed what, when and through which interface (mcp, gui, http). " +
+          "Filter by action, target, actor, time range and limit. Secret values are redacted.",
+        options: { codemode: true },
+        execute: getAuditLogExecute as any,
       });
 
       editor.add({
@@ -2667,7 +3022,7 @@ export default Plugin.define({
     // Регистрируем RPC-методы, вызываемые из GUI-панели.
     // Общая логика создания задачи вынесена в schedulerCreateTask, чтобы
     // schedule_task и create_task использовали один и тот же путь.
-    const rpcRegistration = await ctx.rpc.register(SchedulerRpc, {
+    const rpcHandlers = {
       get_tasks: async () => {
         return { tasks: await collectTasksView() };
       },
@@ -3286,12 +3641,13 @@ export default Plugin.define({
         return await loadSettings();
       },
       save_settings: async (input: unknown) => {
-        const { maxConcurrent, winterMode, notifications, history, integrations } = input as {
+        const { maxConcurrent, winterMode, notifications, history, integrations, audit } = input as {
           maxConcurrent?: number;
           winterMode?: boolean;
           notifications?: NotificationSettings;
           history?: HistorySettings;
           integrations?: IntegrationSettings;
+          audit?: AuditSettings;
         };
         const current = await loadSettings();
         if (
@@ -3299,7 +3655,8 @@ export default Plugin.define({
           winterMode === undefined &&
           notifications === undefined &&
           history === undefined &&
-          integrations === undefined
+          integrations === undefined &&
+          audit === undefined
         ) {
           return {
             success: false,
@@ -3308,6 +3665,7 @@ export default Plugin.define({
             notifications: current.notifications,
             history: current.history,
             integrations: current.integrations,
+            audit: current.audit,
           };
         }
         const settings = await saveSettings({
@@ -3316,6 +3674,7 @@ export default Plugin.define({
           notifications,
           history,
           integrations,
+          audit,
         });
         return {
           success: true,
@@ -3324,6 +3683,7 @@ export default Plugin.define({
           notifications: settings.notifications,
           history: settings.history,
           integrations: settings.integrations,
+          audit: settings.audit,
         };
       },
       test_notification: async () => {
@@ -3332,6 +3692,74 @@ export default Plugin.define({
       send_digest: async () => {
         // Ручная отправка не сдвигает плановое расписание дайджеста.
         return await sendDigestNow({ updateLastSentAt: false });
+      },
+
+      // --- Спринт 26: секреты и аудит -------------------------------------
+      list_secrets: async () => {
+        return { success: true, secrets: listSecrets() };
+      },
+      save_secret: async (input: unknown) => {
+        try {
+          const source = (input ?? {}) as { name?: string; value?: string };
+          const name = (source.name ?? "").trim();
+          if (!name) {
+            return { success: false, message: "Нужно имя секрета." };
+          }
+          if (typeof source.value !== "string" || source.value.length === 0) {
+            return { success: false, message: "Нужно непустое значение секрета." };
+          }
+          const secret = setSecret(name, source.value);
+          return {
+            success: true,
+            message: `Секрет ${secret.name} сохранён в зашифрованном виде.`,
+            secret,
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+      delete_secret: async (input: unknown) => {
+        try {
+          const name = (((input ?? {}) as { name?: string }).name ?? "").trim();
+          if (!name) {
+            return { success: false, message: "Нужно имя секрета." };
+          }
+          const existed = hasSecret(name);
+          deleteSecret(name);
+          return {
+            success: existed,
+            message: existed
+              ? `Секрет ${name} удалён.`
+              : `Секрет ${name} не найден.`,
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+      get_audit: async (input: unknown) => {
+        const source = (input ?? {}) as {
+          action?: string;
+          target?: string;
+          actor?: string;
+          since?: string;
+          until?: string;
+          limit?: number;
+        };
+        const result = readAuditLog({
+          action: source.action,
+          target: source.target,
+          actor: source.actor,
+          since: source.since,
+          until: source.until,
+          limit: source.limit,
+        });
+        return { success: true, ...result };
       },
       get_templates: async () => {
         try {
@@ -3469,7 +3897,12 @@ export default Plugin.define({
           return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
       },
-    });
+    };
+
+    const rpcRegistration = await ctx.rpc.register(
+      SchedulerRpc,
+      withRpcAudit(rpcHandlers) as typeof rpcHandlers
+    );
 
     // Lifecycle матриц (Спринт 16): при старте вычищаем клоны/агрегаторы,
     // чьи родители были удалены в прошлых сессиях.

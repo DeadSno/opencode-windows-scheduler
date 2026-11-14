@@ -4,6 +4,27 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-14
+
+### Added
+
+- **Зашифрованное хранилище секретов (Спринт 26):** AES-256-GCM в `<PLUGIN_DIR>/secrets.json` с ключом `secrets.key` (32 байта, права 0600); API `setSecret/getSecret/deleteSecret/listSecrets/hasSecret`; имена `[A-Za-z0-9_.-]` до 64 символов; превью `••••` + последние 4 символа.
+- **Ссылки на секреты в задачах:** `${secret:NAME}` подставляется из хранилища в `env` рабочей зоны при запуске; отсутствующие секреты дают пустую строку с предупреждением (только имя); ссылки маскируются в логах, истории и аудите.
+- **Журнал аудита (Спринт 26):** таблица `audit_log` в SQLite (действие, цель, актор mcp/gui/http, источник, детали, удалённый адрес) с индексами по времени и действию; ротация 90 дней / 10 000 записей; аудит всех мутаций задач, настроек, шаблонов, профилей, рабочих зон, секретов, импорта и очистки истории.
+- **Инструменты агента:** `manage_secrets` (list/set/delete) и `get_audit_log` (фильтры action/target/actor/since/until/limit); RPC `list_secrets`, `save_secret`, `delete_secret`, `get_audit`; `GET /api/audit`.
+- **GUI:** панель «🔐 Секреты» (список имён + превью, создание, удаление) и панель «📜 Журнал аудита» (таблица с фильтрами), блок ретеншна аудита в настройках.
+
+### Changed
+
+- `manage_settings` принимает блок `audit` (`enabled`, `retentionDays`, `maxRecords`); по умолчанию аудит включён, ретеншн 90 дн., лимит 10 000 записей.
+- `resolveWorkspaceEnv` раскрывает `${secret:NAME}` после слияния env-файла и пар; `maskEnvForLog` оставляет ссылки нетронутыми, маскируя только личные значения.
+- `appendStructuredLog` редуцирует `payload.error` / `payload.reason` перед записью JSONL.
+
+### Security
+
+- Секреты никогда не хранятся в открытом виде; значения не логируются, не попадают в историю запусков и не раскрываются при экспорте задач.
+- Токен Telegram и chat_id можно задать через env `OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN` / `OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID` вместо `settings.json`.
+
 ## [1.3.0] - 2026-11-14
 
 ### Added
@@ -158,7 +179,8 @@ First public release.
 - Deleting a matrix parent deletes its family, but deleting a workspace does not touch existing matrix jobs.
 - Agent tools cover a subset of the RPC surface (see roadmap item 0.4).
 
-[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.1...v1.2.2

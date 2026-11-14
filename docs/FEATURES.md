@@ -436,6 +436,33 @@ and native OS notifications — configurable in settings and testable with
   and reports per-channel success/failure. Failures in one channel never block the
   others and never throw into the task run.
 
+### Secrets (Спринт 26)
+
+Encrypted secret storage in `<PLUGIN_DIR>/secrets.json` with AES-256-GCM and a
+32-byte key file `secrets.key` (rights 0600). The `manage_secrets` tool (and the
+«🔐 Секреты» GUI panel) supports `list`, `set` and `delete`. Secret names match
+`[A-Za-z0-9_.-]` and are up to 64 characters; list shows only name, masked preview
+(`••••` + last 4 chars) and update time — never the value.
+
+In task workspace `env`, reference a secret as `${secret:NAME}`. The value is
+substituted at run time (missing secrets resolve to an empty string with a
+name-only warning). Secret references survive masking — they are shown verbatim in
+the GUI env editor — while literal secret-like values (`TOKEN=`, `PASSWORD=`, …)
+are masked as `***` in logs, structured logs, history and audit.
+
+### Audit log (Спринт 26)
+
+Every mutation — task create/update/delete/run, settings, templates, profiles,
+workspaces, secrets, import, history cleanup — is recorded in an `audit_log`
+table in SQLite with action, target type/target, actor (`mcp`/`gui`/`http`),
+source, redacted details and remote address. Indexes on `ts` and `action`;
+retention defaults to 90 days / 10 000 records with automatic cleanup.
+
+The `get_audit_log` tool (and the «📜 Журнал аудита» GUI panel) reads the journal
+with filters by `action`, `target`, `actor`, `since`/`until` and `limit`. Also
+available as RPC `get_audit` and HTTP `GET /api/audit`. Secret values in details
+are redacted; `${secret:NAME}` references are preserved verbatim.
+
 ### Crash recovery
 
 Runs left in `running` after a crash are marked `error` on the next plugin start, so
@@ -453,11 +480,12 @@ the `cleanup_history` RPC and the GUI's «Очистить сейчас» button
 
 ## Agent interface
 
-Twenty-two tools: `schedule_task`, `list_tasks`, `update_task`, `delete_task`,
+Twenty-four tools: `schedule_task`, `list_tasks`, `update_task`, `delete_task`,
 `run_task_now`, `pause_task`, `resume_task`, `get_history`, `get_task_logs`, `dry_run`,
 `manage_workspaces`, `matrix_control` (results/cancel/cleanup/preview), `get_metrics`,
 `get_analytics`, `manage_settings`, `manage_templates`, `manage_profiles`,
 `transfer_tasks`, `send_notification`, `get_dashboard_info`, `cleanup_history`,
+`manage_secrets`, `get_audit_log`,
 `emit_event`.
 
 A bundled skill, `scheduled-job-best-practices`, teaches the agent safe defaults:

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { LOG_DIR } from "../types.js";
+import { redactSecretsInText } from "./secrets.js";
 
 /**
  * Машиночитаемые логи запусков (Спринт 22).
@@ -120,6 +121,14 @@ export function appendStructuredLog(
       ...record,
       ts: record.ts ?? new Date().toISOString(),
     };
+    // Спринт 26: даже если ошибка пришла из внешнего процесса, известные
+    // значения секретов и присваивания TOKEN=/password: вырезаются.
+    if (typeof payload.error === "string") {
+      payload.error = redactSecretsInText(payload.error);
+    }
+    if (typeof payload.reason === "string") {
+      payload.reason = redactSecretsInText(payload.reason);
+    }
     fs.appendFileSync(STRUCTURED_LOG_FILE, `${JSON.stringify(payload)}\n`, "utf8");
     return true;
   } catch (err) {

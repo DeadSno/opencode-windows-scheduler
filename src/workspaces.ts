@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getDb } from "./db/index.js";
 import { clearWorkspaceAssignments } from "./db/tasks-repo.js";
+import { hasSecretRef, resolveSecretRefs } from "./core/secrets.js";
 
 /**
  * Multi-repo workspaces.
@@ -134,14 +135,23 @@ export function readWorkspaceEnvFile(envFile?: string): Record<string, string> {
 
 /**
  * Итоговые env-переменные workspace: сначала .env-файл, затем явные пары
- * (пары важнее файла). Никогда не бросает.
+ * (пары важнее файла). Ссылки `${secret:NAME}` разворачиваются из
+ * зашифрованного хранилища (Спринт 26); отсутствующий секрет даёт пустую
+ * строку и предупреждение с именем — без значения. Никогда не бросает.
  */
 export function resolveWorkspaceEnv(workspace: Workspace | undefined): Record<string, string> {
   if (!workspace) return {};
-  return {
+  const merged = {
     ...readWorkspaceEnvFile(workspace.envFile),
     ...(workspace.env ?? {}),
   };
+  const resolved = resolveSecretRefs(merged);
+  if (resolved.missing.length > 0) {
+    console.warn(
+      `[workspace] "${workspace.name}": не найдены секреты: ${resolved.missing.join(", ")}`
+    );
+  }
+  return resolved.env;
 }
 
 /** Маскирует значение секрета для логов. */
@@ -151,12 +161,20 @@ export function maskSecretValue(): string {
 
 const SECRET_KEY_RE = /(TOKEN|SECRET|PASS|PASSWORD|KEY|CREDENTIAL|AUTH)/i;
 
-/** Копия env для логов: значения «секретных» ключей заменены на ***. */
+/**
+ * Копия env для логов: значения «секретных» ключей заменены на ***.
+ * Чистые ссылки `${secret:NAME}` сохраняются как есть — это не секрет,
+ * а указатель, и он помогает диагностике (Спринт 26).
+ */
 export function maskEnvForLog(env: Record<string, string> | undefined): Record<string, string> {
   if (!env) return {};
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    masked[key] = SECRET_KEY_RE.test(key) ? maskSecretValue() : value;
+    if (hasSecretRef(value)) {
+      masked[key] = String(value);
+    } else {
+      masked[key] = SECRET_KEY_RE.test(key) ? maskSecretValue() : value;
+    }
   }
   return masked;
 }
