@@ -103,7 +103,7 @@ interface Job {
   beforeScript?: string
   /** Post-flight команда (undefined — не задана). */
   afterScript?: string
-  triggerType?: "cron" | "file" | "mcp-event" | "once"
+  triggerType?: "cron" | "file" | "git" | "mcp-event" | "once"
   /** Для triggerType "once" — время одного запуска (ISO-8601). */
   runAt?: string | null
   /** OpenCode-сессия: new — каждый запуск новая, reuse — переиспользовать, last — --continue. */
@@ -142,6 +142,22 @@ interface Job {
   notBefore?: string | null
   /** Окно запуска: конец "HH:MM" (может быть меньше notBefore). */
   notAfter?: string | null
+  /** Разрешённые дни недели 0=Вс..6=Сб (null — все дни). */
+  activeDays?: number[] | null
+  /** Поведение вне окна: skip / postpone / run (null — postpone). */
+  windowPolicy?: "skip" | "postpone" | "run" | null
+  /** Glob-маски файлового триггера (null — любое изменение). */
+  watchGlobs?: string[] | null
+  /** Glob-маски игнорируемых файлов файлового триггера. */
+  watchIgnore?: string[] | null
+  /** Git-триггер: фильтр по ветке (glob, через запятую). */
+  gitBranch?: string | null
+  /** Git-триггер: маски изменённых файлов, запускающих задачу. */
+  gitPaths?: string[] | null
+  /** Git-триггер: маски игнорируемых изменённых файлов. */
+  gitIgnore?: string[] | null
+  /** Git-триггер: период опроса, секунды. */
+  gitPollSeconds?: number | null
   /** Пауза до даты (ISO) — задача включится автоматически. */
   pausedUntil?: string | null
 }
@@ -161,9 +177,17 @@ interface CustomTemplate {
   beforeScript?: string
   afterScript?: string
   dependsOn?: string[]
-  triggerType?: "cron" | "file" | "mcp-event"
+  triggerType?: "cron" | "file" | "git" | "mcp-event"
   mcpEvent?: { server: string; event: string; filter?: string }
   watchPath?: string
+  watchGlobs?: string[]
+  watchIgnore?: string[]
+  gitBranch?: string
+  gitPaths?: string[]
+  gitIgnore?: string[]
+  gitPollSeconds?: number
+  activeDays?: number[]
+  windowPolicy?: "skip" | "postpone" | "run"
   workingDirectory?: string
   workspaceId?: string
   allowedTools?: string[]
@@ -244,6 +268,19 @@ function errorMessage(err: any): string {
 function shortError(msg: string, limit = 150): string {
   const firstLine = (msg || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? ""
   return firstLine.length > limit ? firstLine.slice(0, limit - 1).trimEnd() + "…" : firstLine
+}
+
+/** Разбивает строку из textarea в список: по запятым и переводам строк. */
+function splitListInput(raw: string): string[] {
+  return (raw || "")
+    .split(/[\r\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+/** Обратное преобразование списка масок в строку для textarea. */
+function joinListInput(list?: string[] | null): string {
+  return Array.isArray(list) ? list.join("\n") : ""
 }
 
 /** Пресеты cron-расписаний */
@@ -805,8 +842,8 @@ export default Plugin.define({
     const [beforeScript, setBeforeScript] = createSignal("")
     const [afterScript, setAfterScript] = createSignal("")
 
-    // Триггеры (cron / file / mcp-event / once) и рабочая директория
-    const [triggerType, setTriggerType] = createSignal<"cron" | "file" | "mcp-event" | "once">("cron")
+    // Триггеры (cron / file / git / mcp-event / once) и рабочая директория
+    const [triggerType, setTriggerType] = createSignal<"cron" | "file" | "git" | "mcp-event" | "once">("cron")
     const [watchPath, setWatchPath] = createSignal("")
     // Разовое время: ISO-8601 или задержка в секундах от нажатия "Запланировать".
     const [runAt, setRunAt] = createSignal("")
@@ -818,6 +855,15 @@ export default Plugin.define({
     const [timezone, setTimezone] = createSignal("")
     const [notBefore, setNotBefore] = createSignal("")
     const [notAfter, setNotAfter] = createSignal("")
+    // Спринт 27: дни недели, политика вне окна, glob- и git-фильтры.
+    const [activeDays, setActiveDays] = createSignal<number[]>([])
+    const [windowPolicy, setWindowPolicy] = createSignal<"skip" | "postpone" | "run">("postpone")
+    const [watchGlobs, setWatchGlobs] = createSignal("")
+    const [watchIgnore, setWatchIgnore] = createSignal("")
+    const [gitBranch, setGitBranch] = createSignal("")
+    const [gitPaths, setGitPaths] = createSignal("")
+    const [gitIgnore, setGitIgnore] = createSignal("")
+    const [gitPollSeconds, setGitPollSeconds] = createSignal("")
     const [mcpServer, setMcpServer] = createSignal("")
     const [mcpEventName, setMcpEventName] = createSignal("")
     const [mcpFilter, setMcpFilter] = createSignal("")
@@ -929,6 +975,24 @@ export default Plugin.define({
           ? { concurrency: Math.floor(concurrency) }
           : {}),
         ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+      }
+    }
+
+    /** Спринт 27: дни недели, политика окна и glob/git-фильтры для payload. */
+    const triggerExtrasPayload = () => {
+      const pollRaw = gitPollSeconds().trim()
+      const poll = pollRaw ? Number(pollRaw) : undefined
+      return {
+        activeDays: activeDays().length > 0 ? activeDays() : undefined,
+        windowPolicy: windowPolicy(),
+        watchGlobs: splitListInput(watchGlobs()),
+        watchIgnore: splitListInput(watchIgnore()),
+        gitBranch: (gitBranch() || "").trim(),
+        gitPaths: splitListInput(gitPaths()),
+        gitIgnore: splitListInput(gitIgnore()),
+        ...(poll !== undefined && Number.isFinite(poll) && poll >= 5
+          ? { gitPollSeconds: Math.floor(poll) }
+          : {}),
       }
     }
 
@@ -1281,11 +1345,21 @@ export default Plugin.define({
         setTriggerType(
           t.triggerType === "file"
             ? "file"
+            : t.triggerType === "git"
+            ? "git"
             : t.triggerType === "mcp-event"
             ? "mcp-event"
             : "cron"
         )
         setWatchPath(t.watchPath ?? "")
+        setWatchGlobs(joinListInput(t.watchGlobs))
+        setWatchIgnore(joinListInput(t.watchIgnore))
+        setGitBranch(t.gitBranch ?? "")
+        setGitPaths(joinListInput(t.gitPaths))
+        setGitIgnore(joinListInput(t.gitIgnore))
+        setGitPollSeconds(t.gitPollSeconds ? String(t.gitPollSeconds) : "")
+        setActiveDays(Array.isArray(t.activeDays) ? t.activeDays : [])
+        setWindowPolicy(t.windowPolicy ?? "postpone")
         setTimezone(t.timezone ?? "")
         setNotBefore(t.notBefore ?? "")
         setNotAfter(t.notAfter ?? "")
@@ -1359,6 +1433,7 @@ export default Plugin.define({
                 }
               : undefined,
           watchPath: (watchPath() || "").trim(),
+          ...triggerExtrasPayload(),
           workingDirectory: (workingDirectory() || "").trim(),
           workspaceId: (workspaceId() || "").trim() || undefined,
           allowedTools: allowedTools().length > 0 ? allowedTools() : undefined,
@@ -1553,6 +1628,7 @@ export default Plugin.define({
                 }
               : undefined,
           watchPath: (watchPath() || "").trim(),
+          ...triggerExtrasPayload(),
           workingDirectory: (workingDirectory() || "").trim(),
           workspaceId: (workspaceId() || "").trim() || undefined,
           allowedTools: allowedTools().length > 0 ? allowedTools() : undefined,
@@ -1821,6 +1897,7 @@ export default Plugin.define({
                 }
               : undefined,
           watchPath: (watchPath() || "").trim(),
+          ...triggerExtrasPayload(),
           workingDirectory: (workingDirectory() || "").trim(),
           workspaceId: (workspaceId() || "").trim() || undefined,
           allowedTools: allowedTools().length > 0 ? allowedTools() : [],
@@ -1890,6 +1967,16 @@ export default Plugin.define({
       setAfterScript(job.afterScript ?? "")
       setTriggerType(job.triggerType ?? "cron")
       setWatchPath(job.watchPath ?? "")
+      setWatchGlobs(joinListInput(job.watchGlobs))
+      setWatchIgnore(joinListInput(job.watchIgnore))
+      setGitBranch(job.gitBranch ?? "")
+      setGitPaths(joinListInput(job.gitPaths))
+      setGitIgnore(joinListInput(job.gitIgnore))
+      setGitPollSeconds(
+        typeof job.gitPollSeconds === "number" ? String(job.gitPollSeconds) : ""
+      )
+      setActiveDays(Array.isArray(job.activeDays) ? job.activeDays : [])
+      setWindowPolicy(job.windowPolicy ?? "postpone")
       setRunAt(job.runAt ?? "")
       setDelaySeconds("")
       setSession(job.session === "reuse" || job.session === "last" ? job.session : "new")
@@ -1962,6 +2049,13 @@ export default Plugin.define({
       if (triggerType() === "cron" && !(schedule() || "").trim()) return "Укажите cron-расписание."
       if (triggerType() === "once" && !(runAt() || "").trim() && !(delaySeconds() || "").trim()) {
         return "Укажите время запуска или задержку."
+      }
+      // Спринт 27: git-триггер работает только в git-репозитории задачи.
+      if (triggerType() === "git" && !(workspaceId() || "").trim() && !(workingDirectory() || "").trim()) {
+        return "Для git-триггера выберите workspace или укажите рабочую директорию."
+      }
+      if ((gitPollSeconds() || "").trim() && !/^([5-9]|[1-9]\d+)$/.test(gitPollSeconds().trim())) {
+        return "Период опроса git — целое число секунд не меньше 5."
       }
       if (matrixMode() && matrixWorkspaceIds().length === 0) return "Выберите хотя бы один workspace для матрицы."
       if (session() === "reuse" && (sessionMaxRuns() || "").trim() && !/^[1-9]\d*$/.test(sessionMaxRuns().trim())) {
@@ -2087,6 +2181,15 @@ export default Plugin.define({
               )}
               {job.watchPath && (
                 <span title={`Отслеживание файла: ${job.watchPath}`} style="font-size:13px;flex-shrink:0;cursor:help">👁️</span>
+              )}
+              {Array.isArray(job.watchGlobs) && job.watchGlobs.length > 0 && (
+                <span title={`Glob-маски файлового триггера: ${job.watchGlobs.join(", ")}`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #5ac8fa;color:#5ac8fa;background:rgba(90,200,250,0.12)">✳ {job.watchGlobs.length} масок</span>
+              )}
+              {job.triggerType === "git" && (
+                <span title={`Git-триггер: новый коммит${job.gitBranch ? ` в ветке ${job.gitBranch}` : ""}${Array.isArray(job.gitPaths) && job.gitPaths.length > 0 ? `, пути: ${job.gitPaths.join(", ")}` : ""}. Опрос каждые ${job.gitPollSeconds ?? 60} с.`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #ff9f0a;color:#ff9f0a;background:rgba(255,159,10,0.12)">🔀 git</span>
+              )}
+              {Array.isArray(job.activeDays) && job.activeDays.length > 0 && (
+                <span title={`Запуск только в дни: ${job.activeDays.map((d) => ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"][d] ?? d).join(", ")}`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #30d158;color:#30d158;background:rgba(48,209,88,0.12)">📅 {job.activeDays.length}/7</span>
               )}
               {job.timezone && (
                 <span title={`Часовой пояс задачи: ${job.timezone}`} style="font-size:11px;font-weight:600;flex-shrink:0;cursor:help;white-space:nowrap;padding:2px 7px;border-radius:999px;border:1px solid #64d2ff;color:#64d2ff;background:rgba(100,210,255,0.12)">🌍 {job.timezone}</span>
@@ -3658,6 +3761,16 @@ export default Plugin.define({
                     <input
                       type="radio"
                       name="triggerType"
+                      checked={triggerType() === "git"}
+                      onChange={() => setTriggerType("git")}
+                      style="accent-color:#007acc"
+                    />
+                    Новый коммит (Git)
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:1">
+                    <input
+                      type="radio"
+                      name="triggerType"
                       checked={triggerType() === "mcp-event"}
                       onChange={() => setTriggerType("mcp-event")}
                       style="accent-color:#007acc"
@@ -3687,7 +3800,71 @@ export default Plugin.define({
                     placeholder="например, C:\project\src\main.ts"
                     style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
                   />
+                  <label style="display:block;margin:12px 0 6px;font-size:12px;color:#b0b0b0;font-weight:500">Glob-маски (по одной в строке, пусто — любое изменение)</label>
+                  <textarea
+                    value={watchGlobs() || ""}
+                    onInput={(e) => setWatchGlobs(e.currentTarget.value)}
+                    rows={3}
+                    placeholder={"**/*.md\nsrc/**"}
+                    style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;resize:vertical;font-family:ui-monospace,Consolas,monospace"
+                  />
+                  <label style="display:block;margin:12px 0 6px;font-size:12px;color:#b0b0b0;font-weight:500">Исключения (glob, по одной в строке)</label>
+                  <textarea
+                    value={watchIgnore() || ""}
+                    onInput={(e) => setWatchIgnore(e.currentTarget.value)}
+                    rows={2}
+                    placeholder={"node_modules/**\n*.log"}
+                    style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;resize:vertical;font-family:ui-monospace,Consolas,monospace"
+                  />
+                  <div style="font-size:11px;color:#8e8e93;margin-top:6px">Маски считаются от пути watchPath. Поддерживаются *, **, ? и классы [abc]; маска каталога с /** рекурсивна.</div>
                 </div>
+              )}
+
+              {triggerType() === "git" && (
+                <>
+                  <div style="display:block;width:100%;margin-bottom:12px">
+                    <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Ветки (glob, через запятую; пусто — любая)</label>
+                    <input
+                      type="text"
+                      value={gitBranch() || ""}
+                      onInput={(e) => setGitBranch(e.currentTarget.value)}
+                      placeholder="main, release/*"
+                      style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                    />
+                  </div>
+                  <div style="display:block;width:100%;margin-bottom:12px">
+                    <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Пути изменений (glob, по одной в строке; пусто — любой файл)</label>
+                    <textarea
+                      value={gitPaths() || ""}
+                      onInput={(e) => setGitPaths(e.currentTarget.value)}
+                      rows={3}
+                      placeholder={"src/**\n**/*.md"}
+                      style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;resize:vertical;font-family:ui-monospace,Consolas,monospace"
+                    />
+                  </div>
+                  <div style="display:block;width:100%;margin-bottom:12px">
+                    <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Игнорируемые пути (glob, по одной в строке)</label>
+                    <textarea
+                      value={gitIgnore() || ""}
+                      onInput={(e) => setGitIgnore(e.currentTarget.value)}
+                      rows={2}
+                      placeholder={"docs/**\n*.lock"}
+                      style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;resize:vertical;font-family:ui-monospace,Consolas,monospace"
+                    />
+                  </div>
+                  <div style="display:block;width:100%;margin-bottom:12px">
+                    <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Период опроса, секунды (минимум 5, по умолчанию 60)</label>
+                    <input
+                      type="number"
+                      min="5"
+                      value={gitPollSeconds() || ""}
+                      onInput={(e) => setGitPollSeconds(e.currentTarget.value)}
+                      placeholder="60"
+                      style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                    />
+                    <div style="font-size:11px;color:#8e8e93;margin-top:6px">Первый опрос запоминает текущий HEAD без запуска задачи — дальше задача стартует на новом коммите, затронувшем подходящие файлы.</div>
+                  </div>
+                </>
               )}
 
               {triggerType() === "mcp-event" && (
@@ -3880,6 +4057,50 @@ export default Plugin.define({
                   </div>
                   <div style="display:block;margin-top:6px;font-size:11px;color:#808080">
                     Вне окна запуск переносится на его открытие, а не пропускается. Например 22:00 — 06:00.
+                  </div>
+                  <div style="display:block;margin-top:12px">
+                    <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Дни недели (пусто — все дни)</label>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap">
+                      {[
+                        { value: 1, label: "Пн" },
+                        { value: 2, label: "Вт" },
+                        { value: 3, label: "Ср" },
+                        { value: 4, label: "Чт" },
+                        { value: 5, label: "Пт" },
+                        { value: 6, label: "Сб" },
+                        { value: 0, label: "Вс" },
+                      ].map((day) => (
+                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;color:#d0d0d5">
+                          <input
+                            type="checkbox"
+                            checked={activeDays().includes(day.value)}
+                            onChange={(e) => {
+                              const next = e.currentTarget.checked
+                                ? [...activeDays(), day.value]
+                                : activeDays().filter((d) => d !== day.value)
+                              setActiveDays([...next].sort((a, b) => a - b))
+                            }}
+                            style="accent-color:#007acc"
+                          />
+                          {day.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div style="display:block;margin-top:12px">
+                    <label style="display:block;margin-bottom:8px;font-size:12px;color:#b0b0b0;font-weight:500">Вне окна или в неразрешённый день</label>
+                    <select
+                      value={windowPolicy()}
+                      onChange={(e) => setWindowPolicy(e.currentTarget.value as "skip" | "postpone" | "run")}
+                      style="display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none"
+                    >
+                      <option value="postpone">Перенести на открытие окна (по умолчанию)</option>
+                      <option value="skip">Пропустить запуск</option>
+                      <option value="run">Выполнить всё равно</option>
+                    </select>
+                    <div style="display:block;margin-top:6px;font-size:11px;color:#808080">
+                      Для cron политика применяется в обёртке, для файловых и git-триггеров — при обработке события. Перенос ждёт не дольше 12 часов.
+                    </div>
                   </div>
                 </div>
               </div>

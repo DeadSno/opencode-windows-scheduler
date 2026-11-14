@@ -467,6 +467,96 @@ export function windowDelayMs(now: Date, notBefore?: string | null, notAfter?: s
 }
 
 // ---------------------------------------------------------------------------
+// Дни недели и политика вне окна (Спринт 27).
+
+/** 0=Вс..6=Сб. Пустой/полный список трактуется как «все дни» (undefined). */
+export function normalizeActiveDays(days?: number[] | null): number[] | undefined {
+  if (!Array.isArray(days)) return undefined;
+  const unique = [
+    ...new Set(
+      days
+        .map((value) => Math.floor(Number(value)))
+        .filter((value) => Number.isInteger(value) && value >= 0 && value <= 6)
+    ),
+  ].sort((a, b) => a - b);
+  if (unique.length === 0 || unique.length === 7) return undefined;
+  return unique;
+}
+
+/** Разрешён ли день недели (в поясе задачи). */
+export function isActiveDay(now: Date, days?: number[] | null, timeZone?: string): boolean {
+  const normalized = normalizeActiveDays(days);
+  if (!normalized) return true;
+  return normalized.includes(zonedParts(now, timeZone).weekday);
+}
+
+export interface ActiveWindowOptions {
+  notBefore?: string | null;
+  notAfter?: string | null;
+  days?: number[] | null;
+  timeZone?: string;
+}
+
+export interface ActiveWindowState {
+  /** Можно запускать сейчас. */
+  active: boolean;
+  /** Почему нельзя (человекочитаемо, для dry-run и логов). */
+  reason?: string;
+  /** Ближайшее открытие окна; null — не требуется или не найдено. */
+  nextOpenAt: Date | null;
+}
+
+const WINDOW_SCAN_MINUTES = 8 * 24 * 60;
+
+/** Ближайшая минута, когда и день, и окно разрешают запуск. */
+export function nextWindowOpenAt(now: Date, options: ActiveWindowOptions): Date | null {
+  const { notBefore, notAfter, timeZone } = options;
+  const normalizedDays = normalizeActiveDays(options.days);
+  const hasWindow = Boolean((notBefore || "").trim() || (notAfter || "").trim());
+  if (!hasWindow && !normalizedDays) return null;
+  const invalidWindow = validateLaunchWindow(notBefore, notAfter) !== null;
+  for (let i = 1; i <= WINDOW_SCAN_MINUTES; i++) {
+    const candidate = new Date(now.getTime() + i * 60_000);
+    const dayOk =
+      !normalizedDays || normalizedDays.includes(zonedParts(candidate, timeZone).weekday);
+    const windowOk = invalidWindow || isInWindow(candidate, notBefore, notAfter, timeZone);
+    if (dayOk && windowOk) return candidate;
+  }
+  return null;
+}
+
+/** Состояние окна с учётом дней недели. */
+export function activeWindowState(now: Date, options: ActiveWindowOptions = {}): ActiveWindowState {
+  const normalizedDays = normalizeActiveDays(options.days);
+  const dayOk =
+    !normalizedDays ||
+    normalizedDays.includes(zonedParts(now, options.timeZone).weekday);
+  const windowOk = isInWindow(now, options.notBefore, options.notAfter, options.timeZone);
+  if (dayOk && windowOk) return { active: true, nextOpenAt: null };
+
+  const reasons: string[] = [];
+  if (!dayOk) {
+    const names = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+    reasons.push(`день недели не разрешён (${(normalizedDays ?? []).map((d) => names[d]).join(", ")})`);
+  }
+  if (!windowOk) {
+    reasons.push(`время вне окна ${options.notBefore}–${options.notAfter}`);
+  }
+  return {
+    active: false,
+    reason: reasons.join("; "),
+    nextOpenAt: nextWindowOpenAt(now, options),
+  };
+}
+
+/** Сколько мс до следующего разрешённого окна (0 — можно запускать). */
+export function nextWindowOpenDelayMs(now: Date, options: ActiveWindowOptions = {}): number {
+  const state = activeWindowState(now, options);
+  if (state.active) return 0;
+  return state.nextOpenAt ? Math.max(0, state.nextOpenAt.getTime() - now.getTime()) : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Проверка совместимости с schtasks (родной режим).
 
 /**
@@ -502,6 +592,10 @@ export interface ScheduleGateSpec {
   tz?: string;
   notBefore?: string;
   notAfter?: string;
+  /** Разрешённые дни недели (0=Вс..6=Сб); пусто — все дни. */
+  days?: number[];
+  /** Поведение вне окна: skip — пропустить, run — выполнить всё равно. */
+  windowPolicy?: "skip" | "run";
 }
 
 /**
@@ -523,11 +617,22 @@ export function buildScheduleGate(
   expr: string,
   timezone?: string | null,
   notBefore?: string,
-  notAfter?: string
+  notAfter?: string,
+  days?: number[] | null,
+  windowPolicy?: string | null
 ): ScheduleGateSpec | undefined {
   const tz = (timezone || "").trim() || undefined;
   const poll = needsPollMode(expr, tz);
-  if (!poll && !(notBefore && notAfter)) return undefined;
+  const normalizedDays = normalizeActiveDays(days);
+  const policy = windowPolicy === "skip" || windowPolicy === "run" ? windowPolicy : undefined;
+  if (!poll && !(notBefore && notAfter) && !normalizedDays) return undefined;
   // cron проверяем только в poll-режиме (см. комментарий у ScheduleGateSpec).
-  return { ...(poll ? { cron: expr } : {}), tz, notBefore, notAfter };
+  return {
+    ...(poll ? { cron: expr } : {}),
+    tz,
+    notBefore,
+    notAfter,
+    ...(normalizedDays ? { days: normalizedDays } : {}),
+    ...(policy ? { windowPolicy: policy } : {}),
+  };
 }

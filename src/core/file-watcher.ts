@@ -1,5 +1,6 @@
 import { watch, type FSWatcher } from "chokidar";
 import { loadTaskDefinitions } from "../task-transfer.js";
+import { filterPaths, relativeTo } from "./glob.js";
 
 /**
  * Задержка между последним изменением файла и запуском задачи.
@@ -18,6 +19,9 @@ interface WatchedTask {
   name: string;
   /** Нормализованный путь, который отслеживаем. */
   path: string;
+  /** Спринт 27: glob-маски и ignore-список (пусто — любое изменение). */
+  globs: string[];
+  ignore: string[];
   watcher: FSWatcher;
   /** Таймер дебаунса (одна задача = один отложенный запуск). */
   timer: NodeJS.Timeout | null;
@@ -57,15 +61,30 @@ export class FileWatchManager {
           typeof d.watchPath === "string" &&
           d.watchPath.trim().length > 0
       )
-      .map((d) => ({ name: d.name.trim(), path: d.watchPath!.trim() }))
+      .map((d) => ({
+        name: d.name.trim(),
+        path: d.watchPath!.trim(),
+        globs: Array.isArray(d.watchGlobs)
+          ? d.watchGlobs.filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+          : [],
+        ignore: Array.isArray(d.watchIgnore)
+          ? d.watchIgnore.filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+          : [],
+      }))
       .filter((d) => d.name.length > 0);
 
     const wantedKeys = new Set(wanted.map((d) => d.name.toLowerCase()));
 
-    // Убираем watcher'ы для задач, которых больше нет или у которых сменился путь.
+    // Убираем watcher'ы для задач, которых больше нет или у которых сменился
+    // путь/маски (Спринт 27).
     for (const [key, entry] of Array.from(this.entries.entries())) {
       const target = wanted.find((d) => d.name.toLowerCase() === key);
-      if (!target || target.path !== entry.path) {
+      if (
+        !target ||
+        target.path !== entry.path ||
+        target.globs.join("\u0000") !== entry.globs.join("\u0000") ||
+        target.ignore.join("\u0000") !== entry.ignore.join("\u0000")
+      ) {
         await this.remove(key);
       }
     }
@@ -74,7 +93,7 @@ export class FileWatchManager {
     for (const item of wanted) {
       const key = item.name.toLowerCase();
       if (this.entries.has(key) || !wantedKeys.has(key)) continue;
-      this.add(item.name, item.path);
+      this.add(item.name, item.path, item.globs, item.ignore);
     }
 
     return this.entries.size;
@@ -88,14 +107,22 @@ export class FileWatchManager {
     }
   }
 
-  private add(name: string, watchPath: string): void {
+  private add(
+    name: string,
+    watchPath: string,
+    globs: string[] = [],
+    ignore: string[] = []
+  ): void {
+    // Спринт 27: маски с "**" требуют рекурсивного обхода директории.
+    const needsRecursive = globs.some((g) => g.includes("**"));
     let watcher: FSWatcher;
     try {
       watcher = watch(watchPath, {
         // Не считаем уже существующий файл «изменением» при старте.
         ignoreInitial: true,
-        // Следим за одним файлом/папкой, без рекурсии в глубину.
-        depth: 0,
+        // Следим за одним файлом/папкой, без рекурсии в глубину, если маски
+        // этого не требуют.
+        depth: needsRecursive ? undefined : 0,
         // Файлы могут быть большими: дождёмся, пока запись успокоится.
         awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
         ignorePermissionErrors: true,
@@ -109,10 +136,32 @@ export class FileWatchManager {
       return;
     }
 
-    const entry: WatchedTask = { name, path: watchPath, watcher, timer: null };
+    const entry: WatchedTask = {
+      name,
+      path: watchPath,
+      globs,
+      ignore,
+      watcher,
+      timer: null,
+    };
 
-    watcher.on("change", (changedPath: string) => {
+    /** Спринт 27: маски применяются к пути относительно watchPath. */
+    const accepts = (changedPath: string): boolean => {
+      if (globs.length === 0 && ignore.length === 0) return true;
+      if (globs.length === 0) {
+        const rel = relativeTo(watchPath, changedPath) ?? changedPath;
+        return filterPaths([rel], undefined, ignore).length > 0;
+      }
+      const rel = relativeTo(watchPath, changedPath);
+      const candidates = rel ? [rel, changedPath] : [changedPath];
+      return candidates.some(
+        (candidate) => filterPaths([candidate], globs, ignore).length > 0
+      );
+    };
+
+    const onChange = (changedPath: string) => {
       if (this.stopped) return;
+      if (!accepts(changedPath)) return;
       if (entry.timer) clearTimeout(entry.timer);
       entry.timer = setTimeout(() => {
         entry.timer = null;
@@ -138,7 +187,13 @@ export class FileWatchManager {
       }, this.debounceMs);
       // Таймер не должен удерживать процесс, если хост завершается.
       if (typeof entry.timer.unref === "function") entry.timer.unref();
-    });
+    };
+
+    // Спринт 27: переименование/удаление файла тоже считается изменением —
+    // иначе mac/win-редакторы, пишущие через rename, «пропадали» бы.
+    watcher.on("change", onChange);
+    watcher.on("add", onChange);
+    watcher.on("unlink", onChange);
 
     watcher.on("error", (err) => {
       console.error(

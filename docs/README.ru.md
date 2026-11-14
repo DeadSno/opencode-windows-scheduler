@@ -35,7 +35,7 @@ English version: [README.md](../README.md).
 | Надёжность | lock-файл от наложения запусков, таймауты с жёстким kill, повторы с задержкой, crash recovery |
 | Качество | команда Quality Gate, before/after hooks, allow/deny списки инструментов для задачи |
 | Оркестрация | DAG `dependsOn`, цепочки `nextTaskOnSuccess` / `nextTaskOnError`, матричный fan-out (parallel/sequential, `continue`/`stop`, concurrency, переопределения для workspace, агрегатор) |
-| Триггеры | cron, одноразовый запуск (`triggerType: "once"`), изменение файла (chokidar), MCP-события, входящие webhooks (`POST /api/hooks/:task` с HMAC) |
+| Триггеры | cron, одноразовый запуск (`triggerType: "once"`), git-коммиты (`triggerType: "git"`, фильтры ветки/путей/игнорирования), изменение файла (chokidar, glob-маски `watchGlobs`/`watchIgnore`), MCP-события, входящие webhooks (`POST /api/hooks/:task` с HMAC) |
 | Мультирепо | workspaces с валидацией путей, запуски по workspace, матрица поверх родительской задачи |
 | Наблюдаемость | история SQLite (success / error / timeout / partial / running), метрики (длительность, токены, стоимость), JSONL-логи с `/api/logs`, Prometheus `/metrics`, экспорт OTLP, логи по задачам, веб-дашборд с аналитикой за 14 дней, ретеншн истории и экспорт CSV/JSON |
 | Эксплуатация | dry-run, экспорт/импорт JSON, шаблоны, уведомления по нескольким каналам (webhook, Telegram, нативные toast), тихие часы, дайджест, зашифрованные секреты (`${secret:NAME}`), журнал аудита, настройки |
@@ -84,7 +84,7 @@ npm run build && npm run build:gui
 
 | Инструмент | Аргументы | Что делает |
 |---|---|---|
-| `schedule_task` | `name`, `prompt`, `schedule` для cron или `runAt` / `delaySeconds` для одноразового запуска, опционально `session` / `sessionMaxRuns`, `timeoutSeconds`, `model`, `priority`, `beforeScript`, `afterScript`, `qualityGate`, `dependsOn`, `retryCount`, `retryDelay`, `nextTaskOnSuccess`, `nextTaskOnError`, `triggerType`, `mcpEvent`, `workingDirectory`, `workspaceId`, `allowedTools`, `deniedTools`, `matrix` | Регистрирует задачу в планировщике ОС (cron, одноразовый запуск, файл или MCP-событие) |
+| `schedule_task` | `name`, `prompt`, `schedule` для cron или `runAt` / `delaySeconds` для одноразового запуска, опционально `session` / `sessionMaxRuns`, `timeoutSeconds`, `model`, `priority`, `beforeScript`, `afterScript`, `qualityGate`, `dependsOn`, `retryCount`, `retryDelay`, `nextTaskOnSuccess`, `nextTaskOnError`, `triggerType` (`cron`/`file`/`git`/`mcp-event`/`once`), `mcpEvent`, `watchPath`, `watchGlobs`, `watchIgnore`, `gitBranch`, `gitPaths`, `gitIgnore`, `gitPollSeconds`, `activeDays`, `windowPolicy` (`skip`/`postpone`/`run`), `workingDirectory`, `workspaceId`, `allowedTools`, `deniedTools`, `matrix` | Регистрирует задачу в планировщике ОС (cron, одноразовый запуск, файл, git или MCP-событие) |
 | `list_tasks` | — | Задачи: расписание, статус, следующее время запуска, цепочки, workspace, сводка матрицы |
 | `update_task` | `name` + изменяемые поля | Частичное обновление: незаданные поля сохраняются, пустые — очищаются, `matrix: null` убирает матрицу |
 | `delete_task` | `name` | Удаляет задачу (родитель матрицы — вместе с клонами и агрегатором) |

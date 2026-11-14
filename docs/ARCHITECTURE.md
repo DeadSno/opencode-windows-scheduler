@@ -267,6 +267,7 @@ existing directory. Env keys must match `^[A-Za-z_][A-Za-z0-9_]*$`; max 100 pair
 | --- | --- |
 | `cron` | OS scheduler on the translated schedule |
 | `file` | chokidar watches `watchPath`; debounced change starts the task |
+| `git` | Polls `HEAD` in the task working directory; runs when new commits match branch/path/ignore filters |
 | `mcp-event` | `emit_event` RPC/tool matches server + event and starts subscribers |
 
 Cron expressions are standard 5-field. The Windows backend supports the subset that

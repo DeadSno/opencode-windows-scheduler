@@ -29,18 +29,21 @@
  */
 import fs from "node:fs";
 import {
+  activeWindowState,
   cronMatches,
   isValidIanaTimeZone,
-  isInWindow,
+  normalizeActiveDays,
   parseCron,
   validateLaunchWindow,
-  windowDelayMs,
 } from "./schedule-v2.js";
 
 const STALE_DEFER_MS = 25 * 60 * 60 * 1000;
 
 /** Сколько живёт маркер ручного запуска. */
 const FORCE_TTL_MS = 2 * 60 * 1000;
+
+/** Дольше 12 часов перенос не ждём — тик просто пропускается. */
+const MAX_POSTPONE_MS = 12 * 60 * 60 * 1000;
 
 function argValue(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
@@ -113,9 +116,22 @@ async function main(): Promise<number> {
   const tz = argValue(args, "--tz");
   const notBefore = argValue(args, "--not-before");
   const notAfter = argValue(args, "--not-after");
+  const daysArg = argValue(args, "--days");
+  const policyArg = argValue(args, "--window-policy");
   const deferFile = argValue(args, "--defer-file");
   const forceFile = argValue(args, "--force-file");
   const nowArg = argValue(args, "--now");
+
+  const days = daysArg
+    ? normalizeActiveDays(
+        daysArg
+          .split(",")
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isFinite(value))
+      )
+    : undefined;
+  const policy: "skip" | "postpone" | "run" =
+    policyArg === "skip" || policyArg === "run" ? policyArg : "postpone";
 
   const now = nowArg ? new Date(nowArg) : new Date();
   if (Number.isNaN(now.getTime())) {
@@ -139,7 +155,6 @@ async function main(): Promise<number> {
   if (windowError) {
     console.error(`[schedule-gate] Окно запуска игнорируется: ${windowError}`);
   }
-  const windowOk = !windowError && !!notBefore && !!notAfter;
 
   let spec = null;
   if (cronExpr) {
@@ -159,43 +174,62 @@ async function main(): Promise<number> {
     return 3;
   }
 
-  if (windowOk && !isInWindow(now, notBefore, notAfter, zone)) {
-    const wait = windowDelayMs(now, notBefore, notAfter, zone);
-    if (wait <= 0) return 0;
-
-    // ПЕРЕНОС: ждём открытия окна. Откладываем один запуск, остальные тики
-    // отсекаются по defer-файлу.
-    if (deferFile) {
-      if (deferFileBusy(deferFile, now.getTime())) {
-        console.error("[schedule-gate] Отложенный запуск уже ожидает открытия окна.");
+  // Дни недели и окно запуска (Спринт 27). Политика вне окна:
+  //   postpone (по умолчанию) — ждём открытия окна;
+  //   skip — тихо пропускаем тик;
+  //   run — выполняем, несмотря на окно.
+  const windowOptions = { notBefore, notAfter, days, timeZone: zone };
+  if (policy !== "run") {
+    const state = activeWindowState(now, windowOptions);
+    if (!state.active) {
+      if (policy === "skip") {
+        console.error(`[schedule-gate] Пропуск: ${state.reason ?? "вне окна"}.`);
         return 3;
       }
-      if (!acquireDefer(deferFile, now.getTime())) {
-        console.error("[schedule-gate] Не удалось захватить defer-файл — пропускаем.");
+
+      const wait = state.nextOpenAt
+        ? Math.max(0, state.nextOpenAt.getTime() - now.getTime())
+        : 0;
+      if (wait <= 0) return 0;
+      if (wait > MAX_POSTPONE_MS) {
+        console.error(
+          `[schedule-gate] ${state.reason ?? "вне окна"} — до открытия больше 12 часов, тик пропущен.`
+        );
         return 3;
       }
-    }
 
-    console.error(
-      `[schedule-gate] Вне окна ${notBefore}–${notAfter} — запуск перенесён на ~${Math.round(
-        wait / 60000
-      )} мин.`
-    );
-    let remaining = wait;
-    let woke = now;
-    while (remaining > 0) {
-      const chunk = Math.min(remaining, 60_000);
-      await sleepMs(chunk);
-      remaining -= chunk;
-      woke = new Date();
-      if (isInWindow(woke, notBefore, notAfter, zone)) break;
-    }
+      // ПЕРЕНОС: ждём открытия окна. Откладываем один запуск, остальные тики
+      // отсекаются по defer-файлу.
+      if (deferFile) {
+        if (deferFileBusy(deferFile, now.getTime())) {
+          console.error("[schedule-gate] Отложенный запуск уже ожидает открытия окна.");
+          return 3;
+        }
+        if (!acquireDefer(deferFile, now.getTime())) {
+          console.error("[schedule-gate] Не удалось захватить defer-файл — пропускаем.");
+          return 3;
+        }
+      }
 
-    if (deferFile) releaseDefer(deferFile);
+      console.error(
+        `[schedule-gate] ${state.reason ?? "Вне окна"} — запуск перенесён на ~${Math.round(
+          wait / 60000
+        )} мин.`
+      );
+      let remaining = wait;
+      while (remaining > 0) {
+        const chunk = Math.min(remaining, 60_000);
+        await sleepMs(chunk);
+        remaining -= chunk;
+      }
 
-    if (!isInWindow(woke, notBefore, notAfter, zone)) {
-      console.error("[schedule-gate] Окно не открылось за отведённое время — не запускаем.");
-      return 3;
+      const woke = new Date();
+      if (deferFile) releaseDefer(deferFile);
+
+      if (!activeWindowState(woke, windowOptions).active) {
+        console.error("[schedule-gate] Окно не открылось за отведённое время — не запускаем.");
+        return 3;
+      }
     }
   }
 

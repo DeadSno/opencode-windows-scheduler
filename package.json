@@ -1,6 +1,6 @@
 {
   "name": "opencode-windows-scheduler",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "OpenCode v2 plugin for scheduling and orchestrating AI agent jobs: cron, one-shot runs, DAG pipelines, matrix builds, quality gates, SQLite history, metrics and a local web dashboard. Windows, macOS and Linux. Free and open source (MIT).",
   "license": "MIT",
   "author": "opencode-windows-scheduler contributors",
@@ -69,7 +69,7 @@
     "demo": "node scripts/demo-dashboard.mjs",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run build:gui",
-    "test": "node test-sqlite.mjs && node test-crash-recovery.mjs && node test-workspaces.mjs && node test-role-scoped.mjs && node test-dry-run.mjs && node test-matrix.mjs && node test-matrix-lifecycle.mjs && node test-matrix-sync.mjs && node test-retention.mjs && node test-metrics.mjs && node test-schedule-v2.mjs && node test-notifications-v2.mjs && node test-notifications-v3.mjs && node test-secrets.mjs && node test-audit.mjs && node test-profiles.mjs && node test-env.mjs && node test-agent-tools.mjs && node test-skill.mjs && node test-integrations.mjs && node test-one-shot.mjs && node test-session-continuity.mjs && node test-task-status.mjs && node test-jobs-view.mjs && node test-dag.mjs && node test-dashboard.mjs && node test-dashboard-dag.mjs && node test-dashboard-json.mjs && node test-docs.mjs",
+    "test": "node test-sqlite.mjs && node test-crash-recovery.mjs && node test-workspaces.mjs && node test-role-scoped.mjs && node test-dry-run.mjs && node test-matrix.mjs && node test-matrix-lifecycle.mjs && node test-matrix-sync.mjs && node test-retention.mjs && node test-metrics.mjs && node test-schedule-v2.mjs && node test-notifications-v2.mjs && node test-notifications-v3.mjs && node test-secrets.mjs && node test-audit.mjs && node test-profiles.mjs && node test-env.mjs && node test-agent-tools.mjs && node test-skill.mjs && node test-integrations.mjs && node test-one-shot.mjs && node test-session-continuity.mjs && node test-task-status.mjs && node test-jobs-view.mjs && node test-dag.mjs && node test-dashboard.mjs && node test-dashboard-dag.mjs && node test-dashboard-json.mjs && node test-docs.mjs && node test-glob.mjs && node test-git-trigger.mjs && node test-window-v3.mjs",
     "test:sqlite": "node test-sqlite.mjs",
     "test:crash": "node test-crash-recovery.mjs",
     "test:workspaces": "node test-workspaces.mjs",
@@ -98,7 +98,10 @@
     "test:dashboard": "node test-dashboard.mjs",
     "test:dashboard-dag": "node test-dashboard-dag.mjs",
     "test:dashboard-json": "node test-dashboard-json.mjs",
-    "test:docs": "node test-docs.mjs"
+    "test:docs": "node test-docs.mjs",
+    "test:glob": "node test-glob.mjs",
+    "test:git-trigger": "node test-git-trigger.mjs",
+    "test:window-v3": "node test-window-v3.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "^2.2.7",

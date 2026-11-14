@@ -4,6 +4,30 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-14
+
+### Added
+
+- **Git-триггеры (Спринт 27):** задача с `triggerType: "git"` запускается при новых коммитах в её рабочей директории. Первый опрос запоминает текущий `HEAD` без запуска задачи (baseline); последующие опросы сравнивают `git diff --name-only <last>..HEAD`. Состояние хранится в таблице SQLite `git_state`.
+- **Фильтры git-триггера:** `gitBranch` (ветка или glob, через запятую), `gitPaths` (glob-маски изменённых файлов), `gitIgnore` (исключения), `gitPollSeconds` (период опроса, минимум 5, по умолчанию 60).
+- **Glob-маски для файловых триггеров:** `watchGlobs` и `watchIgnore` для `triggerType: "file"` — зависимость от путей, поддержка `*`, `**`, `?`, `[abc]`, `{a,b}`, отрицания `!`. Реализовано без внешних зависимостей в `src/core/glob.ts`.
+- **Временные окна и дни недели:** `activeDays` (0=Вс…6=Сб) и `windowPolicy` (`skip` | `postpone` | `run`, по умолчанию `postpone`) для всех типов триггеров. Окно проверяется в `schedule-gate` (cron) и в обработчике события (file/git/mcp-event). `postpone` ждёт открытия окна до 12 часов, `skip` пропускает тик, `run` выполняет в любом случае.
+- **schedule-gate:** новые аргументы `--days 1,2,3,4,5` и `--window-policy skip|postpone|run`, перenos через defer-файл с проверкой каждую 60 с.
+- **GUI:** радиокнопка «Новый коммит (Git)», поля ветки/путей/исключений/периода опроса для git-триггера, два текстовых поля с масками для файлового триггера, 7 чекбоксов дней недели и селект политики окна.
+- **Dry-run:** `triggerDetails` в отчёте — тип триггера, объяснение, активное окно (`activeWindow`), git/файловая информация, предупреждения о причине пропуска.
+- **Тесты:** `test-glob.mjs` (42 проверки), `test-git-trigger.mjs` (31 проверка), `test-window-v3.mjs` (33 проверки) добавлены в цепочку `npm test` (29 → 32 сюит).
+
+### Changed
+
+- `triggerType` enum во всех схемах (`schedule_task`, `update_task`, импорт, RPC, GUI) теперь включает `"git"`.
+- `scheduleTaskExecute` и `updateTaskFromInput` принимают 8 новых полей (`activeDays`, `windowPolicy`, `watchGlobs`, `watchIgnore`, `gitBranch`, `gitPaths`, `gitIgnore`, `gitPollSeconds`) через объект `TriggerExtras`.
+- Обновление задачи объединяет (`clearableString`/`mergeStringList`) новые значения со старыми; пустой массив чистит списки, пустая строка чистит строку.
+
+### Fixed
+
+- Файловый триггер теперь реагирует на `add` и `unlink` (переименование/удаление файла), а не только на `change`.
+- Watcher пересобирается при изменении пути или масок триггера.
+
 ## [1.4.0] - 2026-11-14
 
 ### Added

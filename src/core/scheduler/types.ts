@@ -1,7 +1,7 @@
 import type { ScheduledTaskInfo } from "../../types.js";
 
 /** Чем запускается задача. */
-export type TriggerType = "cron" | "file" | "mcp-event" | "once";
+export type TriggerType = "cron" | "file" | "git" | "mcp-event" | "once";
 
 /**
  * Параметры создания задачи. Бэкенд сам решает, как преобразовать cron

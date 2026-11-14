@@ -8,7 +8,11 @@ import {
   deleteTask,
 } from "./db/tasks-repo.js";
 import { normalizeOneShotRunAt } from "./core/one-shot.js";
-import { isValidIanaTimeZone, validateLaunchWindow } from "./core/schedule-v2.js";
+import {
+  isValidIanaTimeZone,
+  normalizeActiveDays,
+  validateLaunchWindow,
+} from "./core/schedule-v2.js";
 import { isValidSessionId } from "./core/session.js";
 
 /** Триггер задачи по событию из MCP-шины. */
@@ -115,10 +119,11 @@ export interface TaskDefinition {
   dependsOn?: string[];
   /**
    * Чем запускается задача: по расписанию ("cron", по умолчанию),
-   * при изменении файла ("file"), по MCP-событию ("mcp-event") или
-   * однократно в runAt ("once"). Для file/mcp-event/once расписание не нужно.
+   * при изменении файла ("file"), по новому коммиту в git ("git"),
+   * по MCP-событию ("mcp-event") или однократно в runAt ("once").
+   * Для file/git/mcp-event/once расписание не нужно.
    */
-  triggerType?: "cron" | "file" | "mcp-event" | "once";
+  triggerType?: "cron" | "file" | "git" | "mcp-event" | "once";
   /** Абсолютное время однократного запуска (ISO-8601, triggerType "once"). */
   runAt?: string;
   /**
@@ -170,6 +175,32 @@ export interface TaskDefinition {
   notBefore?: string;
   /** Конец окна запуска "HH:MM"; может быть меньше notBefore (через полночь). */
   notAfter?: string;
+  /**
+   * Разрешённые дни недели для окна и cron (Спринт 27): 0 = воскресенье … 6 = суббота.
+   * Пусто — все дни.
+   */
+  activeDays?: number[];
+  /**
+   * Поведение вне окна запуска или в неразрешённый день (Спринт 27):
+   * "postpone" (по умолчанию) — ждать открытия окна, "skip" — пропустить,
+   * "run" — выполнить всё равно.
+   */
+  windowPolicy?: "skip" | "postpone" | "run";
+  /**
+   * Git-триггер (Спринт 27): запускать при новых коммитах в рабочем каталоге.
+   * До первого запуска плагин запоминает текущий HEAD без запуска задачи.
+   */
+  gitBranch?: string;
+  /** Glob-маски путей через запятую: запускать только при изменениях в них. */
+  gitPaths?: string[];
+  /** Glob-маски путей, изменения в которых не считаются триггером. */
+  gitIgnore?: string[];
+  /** Период опроса git, секунды (минимум 5, по умолчанию 60). */
+  gitPollSeconds?: number;
+  /** Glob-маски файлов для triggerType "file" (Спринт 27). */
+  watchGlobs?: string[];
+  /** Glob-маски игнорируемых файлов для triggerType "file". */
+  watchIgnore?: string[];
   /** Пауза до даты (ISO, Спринт 19): плагин включит задачу автоматически. */
   pausedUntil?: string;
   /** Когда задача была создана — защита от ложного catch-up сразу после создания. */
@@ -294,6 +325,7 @@ export async function buildExportJson(
         ? { dependsOn: definition.dependsOn }
         : {}),
       ...(definition?.triggerType === "file" ? { triggerType: "file" as const } : {}),
+      ...(definition?.triggerType === "git" ? { triggerType: "git" as const } : {}),
       ...(definition?.triggerType === "mcp-event"
         ? { triggerType: "mcp-event" as const }
         : {}),
@@ -317,6 +349,27 @@ export async function buildExportJson(
       ...(definition?.timezone ? { timezone: definition.timezone } : {}),
       ...(definition?.notBefore ? { notBefore: definition.notBefore } : {}),
       ...(definition?.notAfter ? { notAfter: definition.notAfter } : {}),
+      // Спринт 27: дни недели, политика окна и git/glob-триггеры.
+      ...(Array.isArray(definition?.activeDays) && definition.activeDays.length > 0
+        ? { activeDays: definition.activeDays }
+        : {}),
+      ...(definition?.windowPolicy ? { windowPolicy: definition.windowPolicy } : {}),
+      ...(definition?.gitBranch ? { gitBranch: definition.gitBranch } : {}),
+      ...(Array.isArray(definition?.gitPaths) && definition.gitPaths.length > 0
+        ? { gitPaths: definition.gitPaths }
+        : {}),
+      ...(Array.isArray(definition?.gitIgnore) && definition.gitIgnore.length > 0
+        ? { gitIgnore: definition.gitIgnore }
+        : {}),
+      ...(definition?.gitPollSeconds !== undefined
+        ? { gitPollSeconds: definition.gitPollSeconds }
+        : {}),
+      ...(Array.isArray(definition?.watchGlobs) && definition.watchGlobs.length > 0
+        ? { watchGlobs: definition.watchGlobs }
+        : {}),
+      ...(Array.isArray(definition?.watchIgnore) && definition.watchIgnore.length > 0
+        ? { watchIgnore: definition.watchIgnore }
+        : {}),
       ...(definition?.pausedUntil ? { pausedUntil: definition.pausedUntil } : {}),
       ...(Array.isArray(definition?.allowedTools) && definition.allowedTools.length > 0
         ? { allowedTools: definition.allowedTools }
@@ -402,9 +455,11 @@ export function parseImportJson(raw: string): ParsedImport {
     const schedule =
       typeof source.schedule === "string" ? source.schedule.trim() : "";
     const prompt = typeof source.prompt === "string" ? source.prompt.trim() : "";
-    const triggerType: "cron" | "file" | "mcp-event" | "once" =
+    const triggerType: "cron" | "file" | "git" | "mcp-event" | "once" =
       source.triggerType === "file"
         ? "file"
+        : source.triggerType === "git"
+        ? "git"
         : source.triggerType === "mcp-event"
         ? "mcp-event"
         : source.triggerType === "once"
@@ -557,6 +612,62 @@ export function parseImportJson(raw: string): ParsedImport {
     const model = readOptionalString(source.model);
     const priority = normalizePriority(source.priority);
     const workspaceId = readOptionalString(source.workspaceId);
+
+    // Спринт 27: git-триггер, glob-маски и временные окна.
+    if (triggerType === "git" && !workspaceId && !workingDirectory) {
+      errors.push(
+        `Запись ${position}${name ? ` (${name})` : ""}: для git-триггера нужна рабочая директория (workingDirectory или workspaceId).`
+      );
+      return;
+    }
+    const readStringList = (value: unknown): string[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const items = value
+        .filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
+        .map((entry) => entry.trim());
+      return items.length > 0 ? items : undefined;
+    };
+    const gitBranch = readOptionalString(source.gitBranch);
+    const gitPaths = readStringList(source.gitPaths);
+    const gitIgnore = readStringList(source.gitIgnore);
+    const watchGlobs = readStringList(source.watchGlobs);
+    const watchIgnore = readStringList(source.watchIgnore);
+    const gitPollSeconds =
+      typeof source.gitPollSeconds === "number" &&
+      Number.isFinite(source.gitPollSeconds) &&
+      source.gitPollSeconds > 0
+        ? Math.floor(source.gitPollSeconds)
+        : undefined;
+    const rawDays = Array.isArray(source.activeDays) ? source.activeDays : undefined;
+    let activeDays: number[] | undefined;
+    if (rawDays) {
+      const days = rawDays.filter(
+        (value): value is number =>
+          typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 6
+      );
+      if (days.length !== rawDays.length) {
+        errors.push(
+          `Запись ${position}${name ? ` (${name})` : ""}: activeDays должен содержать числа 0..6 (0 = воскресенье).`
+        );
+        return;
+      }
+      activeDays = normalizeActiveDays(days);
+    }
+    let windowPolicy: "skip" | "postpone" | "run" | undefined;
+    if (source.windowPolicy !== undefined) {
+      if (
+        source.windowPolicy === "skip" ||
+        source.windowPolicy === "postpone" ||
+        source.windowPolicy === "run"
+      ) {
+        windowPolicy = source.windowPolicy;
+      } else {
+        errors.push(
+          `Запись ${position}${name ? ` (${name})` : ""}: неизвестный windowPolicy «${String(source.windowPolicy)}» (ожидается skip, postpone или run).`
+        );
+        return;
+      }
+    }
 
     // Планирование 2.0 (Спринт 19): IANA-зона, окно запуска, пауза до даты.
     const timezone = readOptionalString(source.timezone);
@@ -781,6 +892,14 @@ export function parseImportJson(raw: string): ParsedImport {
       ...(timezone !== undefined ? { timezone } : {}),
       ...(notBefore !== undefined ? { notBefore } : {}),
       ...(notAfter !== undefined ? { notAfter } : {}),
+      ...(activeDays !== undefined ? { activeDays } : {}),
+      ...(windowPolicy !== undefined ? { windowPolicy } : {}),
+      ...(gitBranch !== undefined ? { gitBranch } : {}),
+      ...(gitPaths !== undefined ? { gitPaths } : {}),
+      ...(gitIgnore !== undefined ? { gitIgnore } : {}),
+      ...(gitPollSeconds !== undefined ? { gitPollSeconds } : {}),
+      ...(watchGlobs !== undefined ? { watchGlobs } : {}),
+      ...(watchIgnore !== undefined ? { watchIgnore } : {}),
       ...(pausedUntil !== undefined ? { pausedUntil } : {}),
       ...(mcpEvent ? { mcpEvent } : {}),
       ...(allowedTools !== undefined ? { allowedTools } : {}),

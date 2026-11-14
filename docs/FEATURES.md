@@ -102,6 +102,11 @@ it is never accepted from user input or exported as plain text.
 - `notBefore` / `notAfter` — daily launch window in `HH:MM` (may cross midnight,
   e.g. `22:00`–`06:00`). A run that fires outside the window is **postponed**
   until the window opens (once, via a defer-file), not skipped.
+- `activeDays` — allowed weekdays `0`=Sunday … `6`=Saturday (Спринт 27). Empty or
+  all seven means every day. Applies to cron and event triggers.
+- `windowPolicy` — behaviour outside the window or on a disallowed day (Спринт 27):
+  `postpone` (default) waits for the next opening (max 12 hours), `skip` drops the
+  run, `run` executes anyway.
 - `pausedUntil` — pause a task until an ISO moment. `pause_task` accepts
   `until`; the plugin re-enables the task automatically at startup and on a
   5-minute timer, and `resume_task` resumes early.
@@ -119,6 +124,52 @@ it is never accepted from user input or exported as plain text.
 
 The file is watched with chokidar in the plugin host, changes are debounced. File
 triggers ignore `schedule`.
+
+#### Glob-маски для файловых триггеров (Спринт 27)
+
+`watchGlobs` и `watchIgnore` ограничивают, какие изменения считаются триггером:
+
+```json
+{
+  "name": "regen-docs",
+  "triggerType": "file",
+  "watchPath": "C:\\projects\\site",
+  "watchGlobs": ["**/*.md", "**/*.html"],
+  "watchIgnore": ["node_modules/**", "**/*.log"],
+  "prompt": "Rebuild the static site when docs change."
+}
+```
+
+Маски поддерживают `*` (не пересекает `/`), `**` (любые сегменты, включая ноль),
+`?` (один символ), `[abc]` / `[a-z]` (классы), `{a,b}` (альтернативы) и `!`
+(отрицание). Пустой `watchGlobs` означает «любое изменение». Пути нормализуются
+к POSIX-виду (`\` → `/`), сравнение регистронезависимое на Windows.
+
+### Git triggers (Спринт 27)
+
+```json
+{
+  "name": "deploy-on-push",
+  "triggerType": "git",
+  "workingDirectory": "C:\\projects\\api",
+  "gitBranch": "main, release/*",
+  "gitPaths": ["src/**", "package.json"],
+  "gitIgnore": ["**/*.md", "CHANGELOG.md"],
+  "gitPollSeconds": 60,
+  "prompt": "Deploy the changed services to staging."
+}
+```
+
+Задача с `triggerType: "git"` запускается, когда в её рабочей директории появляется
+новый коммит. Первый опрос только запоминает текущий `HEAD` (baseline) и ничего не
+запускает. Последующие опросы сравнивают `git diff --name-only <last>..HEAD` и
+запускают задачу, если совпадают маски `gitPaths` (пусто — любой файл) и не
+попадают под `gitIgnore`. Фильтр `gitBranch` ограничивает ветки (через запятую,
+поддерживает `*` и `?`).
+
+Период опроса `gitPollSeconds` — минимум 5 секунд, по умолчанию 60. Состояние
+(последний обработанный коммит) хранится в таблице SQLite `git_state`, поэтому
+перезапуск плагина не приводит к повторным запускам.
 
 ### MCP event triggers
 

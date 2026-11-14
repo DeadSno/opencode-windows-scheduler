@@ -643,6 +643,13 @@ export async function writeWrapperCmd(
     if (scheduleGate.notAfter?.trim()) {
       gateArgs.push(`--not-after ${scheduleGate.notAfter.trim()}`);
     }
+    // Спринт 27: дни недели и политика окна.
+    if (Array.isArray(scheduleGate.days) && scheduleGate.days.length > 0) {
+      gateArgs.push(`--days ${scheduleGate.days.join(",")}`);
+    }
+    if (scheduleGate.windowPolicy) {
+      gateArgs.push(`--window-policy ${scheduleGate.windowPolicy}`);
+    }
     if (scheduleGate.deferFile?.trim()) {
       gateArgs.push(`--defer-file "${scheduleGate.deferFile.trim()}"`);
     }

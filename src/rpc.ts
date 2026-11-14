@@ -101,6 +101,37 @@ const TaskItem = {
     notBefore: { type: ["string", "null"] },
     /** Конец окна запуска "HH:MM" (null — без окна). */
     notAfter: { type: ["string", "null"] },
+    /** Спринт 27: разрешённые дни недели 0=Вс..6=Сб (null — все дни). */
+    activeDays: {
+      type: ["array", "null"],
+      items: { type: "number" },
+    },
+    /** Поведение вне окна: skip, postpone или run (null — postpone). */
+    windowPolicy: { type: ["string", "null"] },
+    /** Glob-маски файлового триггера (null — без ограничения). */
+    watchGlobs: {
+      type: ["array", "null"],
+      items: { type: "string" },
+    },
+    /** Glob-маски исключений файлового триггера. */
+    watchIgnore: {
+      type: ["array", "null"],
+      items: { type: "string" },
+    },
+    /** Git-триггер: фильтр ветки (glob, через запятую). */
+    gitBranch: { type: ["string", "null"] },
+    /** Git-триггер: маски путей, изменения в которых запускают задачу. */
+    gitPaths: {
+      type: ["array", "null"],
+      items: { type: "string" },
+    },
+    /** Git-триггер: маски игнорируемых путей. */
+    gitIgnore: {
+      type: ["array", "null"],
+      items: { type: "string" },
+    },
+    /** Git-триггер: период опроса в секундах (null — 60). */
+    gitPollSeconds: { type: ["number", "null"] },
     /** Пауза до даты в ISO (null — автопродолжение не запланировано). */
     pausedUntil: { type: ["string", "null"] },
     /** Рабочая директория задачи (null — папка проекта по умолчанию). */
@@ -222,6 +253,22 @@ const CreateTaskInput = {
     notBefore: { type: "string" },
     /** Конец окна запуска "HH:MM"; может быть меньше notBefore (через полночь). */
     notAfter: { type: "string" },
+    /** Спринт 27: разрешённые дни недели 0=Вс..6=Сб. Пусто — все дни. */
+    activeDays: { type: "array", items: { type: "number" } },
+    /** Поведение вне окна/дня: postpone (по умолчанию), skip или run. */
+    windowPolicy: { type: "string" },
+    /** Glob-маски файлового триггера (например, src/** и *.md). */
+    watchGlobs: { type: "array", items: { type: "string" } },
+    /** Glob-маски исключений файлового триггера. */
+    watchIgnore: { type: "array", items: { type: "string" } },
+    /** Git-триггер: ветка или glob (main, release/*), через запятую. */
+    gitBranch: { type: "string" },
+    /** Git-триггер: маски изменённых файлов, при которых задача запускается. */
+    gitPaths: { type: "array", items: { type: "string" } },
+    /** Git-триггер: маски изменённых файлов, которые игнорируются. */
+    gitIgnore: { type: "array", items: { type: "string" } },
+    /** Git-триггер: период опроса в секундах (минимум 5, по умолчанию 60). */
+    gitPollSeconds: { type: "number" },
   },
   required: ["name", "prompt"],
 } as const;
@@ -768,6 +815,16 @@ const TemplateItem = {
     triggerType: { type: "string" },
     mcpEvent: McpEventSchema,
     watchPath: { type: "string" },
+    /** Спринт 27: glob-маски и исключения файлового триггера. */
+    watchGlobs: { type: "array", items: { type: "string" } },
+    watchIgnore: { type: "array", items: { type: "string" } },
+    /** Спринт 27: git-триггер и дни/политика окна. */
+    gitBranch: { type: "string" },
+    gitPaths: { type: "array", items: { type: "string" } },
+    gitIgnore: { type: "array", items: { type: "string" } },
+    gitPollSeconds: { type: "number" },
+    activeDays: { type: "array", items: { type: "number" } },
+    windowPolicy: { type: "string" },
     workspaceId: { type: "string" },
     workingDirectory: { type: "string" },
     /** Белый список инструментов задачи (role-scoped, metadata-only). */
@@ -921,6 +978,22 @@ const UpdateTaskInput = {
     notBefore: { type: "string" },
     /** Конец окна запуска "HH:MM". Пустая строка — сбросить окно. */
     notAfter: { type: "string" },
+    /** Спринт 27: дни недели 0=Вс..6=Сб. Пустой массив — снять ограничение. */
+    activeDays: { type: "array", items: { type: "number" } },
+    /** Поведение вне окна: postpone (по умолчанию), skip или run. */
+    windowPolicy: { type: "string" },
+    /** Glob-маски файлового триггера. Пустой массив — снять ограничение. */
+    watchGlobs: { type: "array", items: { type: "string" } },
+    /** Glob-маски исключений файлового триггера. Пустой массив — очистить. */
+    watchIgnore: { type: "array", items: { type: "string" } },
+    /** Git-триггер: фильтр ветки (glob, через запятую). Пустая строка — сбросить. */
+    gitBranch: { type: "string" },
+    /** Git-триггер: маски путей. Пустой массив — сбросить. */
+    gitPaths: { type: "array", items: { type: "string" } },
+    /** Git-триггер: маски игнорируемых путей. Пустой массив — очистить. */
+    gitIgnore: { type: "array", items: { type: "string" } },
+    /** Git-триггер: период опроса в секундах (минимум 5). */
+    gitPollSeconds: { type: "number" },
   },
   required: ["name"],
 } as const;

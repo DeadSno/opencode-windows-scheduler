@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, ts DESC);
+
+-- Спринт 27: последний обработанный коммит для git-триггеров.
+CREATE TABLE IF NOT EXISTS git_state (
+  task_name TEXT PRIMARY KEY,
+  commit_sha TEXT NOT NULL,
+  branch TEXT,
+  updated_at TEXT NOT NULL
+);
 `;
 
 interface SchemaDb {

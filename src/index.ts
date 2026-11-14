@@ -7,7 +7,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { LockManager } from "./core/lock.js";
 import { LOCK_DIR, LOG_DIR, PLUGIN_DIR, sanitizeName } from "./types.js";
-import { parseCron, buildScheduleGate, isValidIanaTimeZone, validateLaunchWindow, prevRun } from "./core/schedule-v2.js";
+import { parseCron, buildScheduleGate, isValidIanaTimeZone, validateLaunchWindow, prevRun, normalizeActiveDays, activeWindowState, nextWindowOpenDelayMs } from "./core/schedule-v2.js";
 import {
   buildLaunchdOneShotCleanup,
   normalizeOneShotRunAt,
@@ -65,6 +65,7 @@ import {
   normalizePriority,
 } from "./task-transfer.js";
 import { FileWatchManager } from "./core/file-watcher.js";
+import { GitTriggerManager } from "./core/git-trigger.js";
 import type {
   McpEventTrigger,
   MatrixConfig,
@@ -320,10 +321,10 @@ export const scheduleTaskSchema = z.object({
     .optional()
     .describe("Compensation/rollback task started after a failed run."),
   triggerType: z
-    .enum(["cron", "file", "mcp-event", "once"])
+    .enum(["cron", "file", "git", "mcp-event", "once"])
     .optional()
     .describe(
-      "Trigger type: cron (default), file, mcp-event or once (single run at runAt/delaySeconds)."
+      "Trigger type: cron (default), file, git (new commits in the task working directory), mcp-event or once (single run at runAt/delaySeconds)."
     ),
   mcpEvent: z
     .object({
@@ -340,6 +341,52 @@ export const scheduleTaskSchema = z.object({
     .optional()
     .describe(
       "File or directory to watch when triggerType is \"file\". Can be set here or later via update_task."
+    ),
+  watchGlobs: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Glob masks that limit a file trigger, e.g. [\"**/*.md\", \"src/**\"]. Empty means any change under watchPath."
+    ),
+  watchIgnore: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Glob masks excluded from a file trigger, e.g. [\"node_modules/**\", \"*.log\"]. Supports leading ! to re-include."
+    ),
+  gitBranch: z
+    .string()
+    .optional()
+    .describe(
+      "Only for triggerType=git: branch name or glob (main, release/*, comma-separated). Empty means any branch."
+    ),
+  gitPaths: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Only for triggerType=git: glob masks of changed files that must match to start the task (git diff --name-only)."
+    ),
+  gitIgnore: z
+    .array(z.string())
+    .optional()
+    .describe("Only for triggerType=git: glob masks of changed files to ignore."),
+  gitPollSeconds: z
+    .number()
+    .int()
+    .min(5)
+    .optional()
+    .describe("Only for triggerType=git: polling interval in seconds (default 60, minimum 5)."),
+  activeDays: z
+    .array(z.number().int().min(0).max(6))
+    .optional()
+    .describe(
+      "Allowed weekdays 0=Sunday..6=Saturday for cron and event triggers. Empty or all seven means every day."
+    ),
+  windowPolicy: z
+    .enum(["skip", "postpone", "run"])
+    .optional()
+    .describe(
+      "Behaviour outside the launch window / active days: postpone (default, wait for the next opening), skip or run anyway."
     ),
   workingDirectory: z
     .string()
@@ -463,6 +510,42 @@ export const updateTaskSchema = z.object({
     .string()
     .optional()
     .describe("New launch window end HH:MM. Empty string clears the window."),
+  activeDays: z
+    .array(z.number().int().min(0).max(6))
+    .optional()
+    .describe(
+      "New allowed weekdays 0=Sunday..6=Saturday. Empty array clears the restriction."
+    ),
+  windowPolicy: z
+    .enum(["skip", "postpone", "run"])
+    .optional()
+    .describe("New behaviour outside the window: postpone (default), skip or run."),
+  watchGlobs: z
+    .array(z.string())
+    .optional()
+    .describe("New glob masks for a file trigger. Empty array clears them."),
+  watchIgnore: z
+    .array(z.string())
+    .optional()
+    .describe("New ignore masks for a file trigger. Empty array clears them."),
+  gitBranch: z
+    .string()
+    .optional()
+    .describe("New git branch filter (glob, comma-separated). Empty string clears it."),
+  gitPaths: z
+    .array(z.string())
+    .optional()
+    .describe("New changed-file masks for a git trigger. Empty array clears them."),
+  gitIgnore: z
+    .array(z.string())
+    .optional()
+    .describe("New ignored changed-file masks for a git trigger. Empty array clears them."),
+  gitPollSeconds: z
+    .number()
+    .int()
+    .min(5)
+    .optional()
+    .describe("New git polling interval in seconds."),
   prompt: z
     .string()
     .optional()
@@ -500,7 +583,7 @@ export const updateTaskSchema = z.object({
     .optional()
     .describe("New error-chain task. Empty string clears it."),
   triggerType: z
-    .enum(["cron", "file", "mcp-event", "once"])
+    .enum(["cron", "file", "git", "mcp-event", "once"])
     .optional()
     .describe("New trigger type."),
   mcpEvent: z
@@ -899,6 +982,14 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
     notAfter,
     session,
     sessionMaxRuns,
+    activeDays,
+    windowPolicy,
+    watchGlobs,
+    watchIgnore,
+    gitBranch,
+    gitPaths,
+    gitIgnore,
+    gitPollSeconds,
   } = args;
 
   let effectiveRunAt: string | undefined;
@@ -952,7 +1043,17 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
       effectiveRunAt,
       effectiveSession,
       effectiveSessionId,
-      sessionMaxRuns
+      sessionMaxRuns,
+      {
+        activeDays,
+        windowPolicy,
+        watchGlobs,
+        watchIgnore,
+        gitBranch,
+        gitPaths,
+        gitIgnore,
+        gitPollSeconds,
+      }
     );
   } catch (err: any) {
     return {
@@ -965,7 +1066,7 @@ const scheduleTaskExecute = wrapExecute<ScheduleArgs>(async (args) => {
 
   // Новый файловый триггер должен начать работать сразу, без перезапуска
   // OpenCode: пересобираем набор watcher-ов после создания задачи.
-  await refreshFileTriggers();
+  await refreshTriggers();
 
   const workspace = workspaceId ? getWorkspace(workspaceId) : undefined;
   const effectiveWorkdir =
@@ -1222,7 +1323,7 @@ const deleteTaskExecute = wrapExecute<DeleteArgs>(async (args) => {
   try {
     const { removed, existed } = await deleteTaskWithFamily(name);
     // Убираем watcher удалённой задачи, не дожидаясь перезапуска плагина.
-    await refreshFileTriggers();
+    await refreshTriggers();
     if (!existed && removed.length === 0) {
       return {
         content: JSON.stringify({
@@ -1424,6 +1525,34 @@ async function updateTaskFromInput(
     };
   }
 
+  // Спринт 27: параметры триггеров сохраняются, если поле не передано.
+  const mergeStringList = (
+    next: string[] | undefined,
+    prev: string[] | undefined
+  ): string[] | undefined => {
+    if (next === undefined) return prev;
+    const cleaned = next
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return cleaned.length > 0 ? cleaned : undefined;
+  };
+  const triggerExtras: TriggerExtras = {
+    activeDays:
+      input.activeDays === undefined
+        ? previous.activeDays
+        : input.activeDays.length > 0
+          ? input.activeDays
+          : undefined,
+    windowPolicy: input.windowPolicy ?? previous.windowPolicy,
+    watchGlobs: mergeStringList(input.watchGlobs, previous.watchGlobs),
+    watchIgnore: mergeStringList(input.watchIgnore, previous.watchIgnore),
+    gitBranch: clearableString(input.gitBranch, previous.gitBranch),
+    gitPaths: mergeStringList(input.gitPaths, previous.gitPaths),
+    gitIgnore: mergeStringList(input.gitIgnore, previous.gitIgnore),
+    gitPollSeconds: input.gitPollSeconds ?? previous.gitPollSeconds,
+  };
+
   try {
     // Обновление = пересоздание в планировщике с сохранением старых значений.
     await scheduler.deleteTask(name);
@@ -1461,7 +1590,8 @@ async function updateTaskFromInput(
       runAt,
       session,
       sessionId,
-      sessionMaxRuns
+      sessionMaxRuns,
+      triggerExtras
     );
 
     // Матрица отключена при обновлении — убираем клонов и агрегатор.
@@ -1471,7 +1601,7 @@ async function updateTaskFromInput(
 
     // Пересоздание могло изменить triggerType/watchPath — сразу
     // пересобираем набор файловых watcher-ов.
-    await refreshFileTriggers();
+    await refreshTriggers();
 
     return { success: true, message: `Задача "${name}" обновлена.` };
   } catch (err: any) {
@@ -2201,7 +2331,7 @@ const transferTasksExecute = wrapExecute<TransferArgs>(async (args) => {
       errors.push(`${def.name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  await refreshFileTriggers();
+  await refreshTriggers();
   return {
     content: JSON.stringify({ success: errors.length === 0, imported, errors }),
   };
@@ -2488,17 +2618,105 @@ function withRpcAudit<T extends Record<string, (...args: any[]) => any>>(handler
  */
 let fileWatcherManager: FileWatchManager | null = null;
 
-async function refreshFileTriggers(): Promise<void> {
-  if (!fileWatcherManager) return;
-  try {
-    await fileWatcherManager.refresh();
-  } catch (err: any) {
-    console.error(
-      `[windows-scheduler] Не удалось обновить файловые триггеры: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
+/**
+ * Спринт 27: менеджер git-триггеров. Опрашивает HEAD задач с
+ * triggerType === "git" и запускает их при новых подходящих коммитах.
+ */
+let gitTriggerManager: GitTriggerManager | null = null;
+
+/**
+ * Приводит в актуальное состояние все событийные триггеры (файлы и git).
+ * Вызывается после создания, изменения и удаления задачи.
+ */
+async function refreshTriggers(): Promise<void> {
+  if (fileWatcherManager) {
+    try {
+      await fileWatcherManager.refresh();
+    } catch (err: any) {
+      console.error(
+        `[windows-scheduler] Не удалось обновить файловые триггеры: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
   }
+  if (gitTriggerManager) {
+    try {
+      await gitTriggerManager.refresh();
+    } catch (err: any) {
+      console.error(
+        `[windows-scheduler] Не удалось обновить git-триггеры: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+}
+
+/** Максимальная задержка переноса событийного запуска (12 часов). */
+const EVENT_POSTPONE_MAX_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Спринт 27: запуск задачи по событию (файл, git, MCP) с учётом окна запуска
+ * и разрешённых дней недели. Вне окна: skip — пишем причину и выходим,
+ * postpone — таймер до ближайшего открытия, run — запускаем сразу.
+ */
+async function scheduleEventRun(taskName: string, reason: string): Promise<void> {
+  const definition = getTask(taskName);
+  if (!definition) return;
+
+  const policy = definition.windowPolicy ?? "postpone";
+  const options = {
+    notBefore: definition.notBefore,
+    notAfter: definition.notAfter,
+    days: definition.activeDays,
+    timeZone: definition.timezone,
+  };
+  const now = new Date();
+  const state = activeWindowState(now, options);
+
+  if (state.active || policy === "run") {
+    await runTaskEntry(taskName);
+    console.log(
+      `[windows-scheduler] Запуск задачи "${taskName}" (${reason}).`
+    );
+    return;
+  }
+
+  if (policy === "skip") {
+    console.log(
+      `[windows-scheduler] Задача "${taskName}" не запущена (${reason}): ${
+        state.reason ?? "вне окна"
+      } — политика skip.`
+    );
+    return;
+  }
+
+  const delay = nextWindowOpenDelayMs(now, options);
+  if (delay <= 0 || delay > EVENT_POSTPONE_MAX_MS) {
+    console.log(
+      `[windows-scheduler] Задача "${taskName}" не запущена (${reason}): ${
+        state.reason ?? "вне окна"
+      } — до открытия окна больше 12 ч.`
+    );
+    return;
+  }
+
+  console.log(
+    `[windows-scheduler] Задача "${taskName}" (${reason}) отложена на ~${Math.round(
+      delay / 60000
+    )} мин: ${state.reason ?? "вне окна"}.`
+  );
+  const timer = setTimeout(() => {
+    void scheduleEventRun(taskName, reason).catch((err: any) => {
+      console.error(
+        `[windows-scheduler] Не удалось запустить отложенную задачу "${taskName}": ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    });
+  }, delay);
+  timer.unref?.();
 }
 
 export default Plugin.define({
@@ -2651,10 +2869,7 @@ export default Plugin.define({
     // запускаются при изменении watchPath через chokidar (с дебаунсом).
     fileWatcherManager = new FileWatchManager(async (taskName) => {
       try {
-        await runTaskEntry(taskName);
-        console.log(
-          `[windows-scheduler] Запуск задачи "${taskName}" по изменению отслеживаемого файла.`
-        );
+        await scheduleEventRun(taskName, "изменение отслеживаемого файла");
       } catch (err: any) {
         console.error(
           `[windows-scheduler] Не удалось запустить задачу "${taskName}" по файловому триггеру: ${
@@ -2663,7 +2878,21 @@ export default Plugin.define({
         );
       }
     });
-    void refreshFileTriggers();
+
+    // Спринт 27: git-триггеры — опрос HEAD и запуск при новых коммитах,
+    // затронувших подходящие файлы.
+    gitTriggerManager = new GitTriggerManager(async (taskName, info) => {
+      try {
+        await scheduleEventRun(taskName, `новый коммит ${info.head?.slice(0, 7) ?? ""}`);
+      } catch (err: any) {
+        console.error(
+          `[windows-scheduler] Не удалось запустить задачу "${taskName}" по git-триггеру: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    });
+    void refreshTriggers();
 
     const registration = await ctx.tool.transform((editor) => {
       // editor.add регистрирует новые инструменты плагина с codemode: true,
@@ -3067,7 +3296,7 @@ export default Plugin.define({
           nextTaskOnSuccess?: string;
           nextTaskOnError?: string;
           dependsOn?: string[];
-          triggerType?: "cron" | "file" | "mcp-event" | "once";
+          triggerType?: "cron" | "file" | "git" | "mcp-event" | "once";
           watchPath?: string;
           workingDirectory?: string;
           model?: string;
@@ -4008,6 +4237,21 @@ function resolveMatrixExtraConfig(
  * Общая логика создания задачи: используется и schedule_task (инструмент),
  * и create_task (RPC-метод для GUI).
  */
+/**
+ * Спринт 27: дополнительные параметры триггеров (дни недели, политика окна,
+ * glob-фильтры файловых триггеров и git-триггеры).
+ */
+export interface TriggerExtras {
+  activeDays?: number[];
+  windowPolicy?: "skip" | "postpone" | "run";
+  watchGlobs?: string[];
+  watchIgnore?: string[];
+  gitBranch?: string;
+  gitPaths?: string[];
+  gitIgnore?: string[];
+  gitPollSeconds?: number;
+}
+
 async function schedulerCreateTask(
   name: string,
   schedule: string,
@@ -4019,7 +4263,7 @@ async function schedulerCreateTask(
   qualityGate?: string,
   nextTaskOnSuccess?: string,
   nextTaskOnError?: string,
-  triggerType?: "cron" | "file" | "mcp-event" | "once",
+  triggerType?: "cron" | "file" | "git" | "mcp-event" | "once",
   watchPath?: string,
   dependsOn?: string[],
   model?: string,
@@ -4049,7 +4293,9 @@ async function schedulerCreateTask(
   /** ID сессии для reuse (генерируется автоматически; пользователь не задаёт). */
   sessionId?: string,
   /** Сколько запусков переживает reuse-сессия до ротации (0/undefined — без ограничения). */
-  sessionMaxRuns?: number
+  sessionMaxRuns?: number,
+  /** Спринт 27: дни недели, политика окна, glob- и git-фильтры. */
+  triggerExtras?: TriggerExtras
 ): Promise<void> {
   const normalizedModel = model?.trim() || undefined;
   const normalizedPriority = normalizePriority(priority);
@@ -4059,6 +4305,35 @@ async function schedulerCreateTask(
   const normalizedNotBefore = notBefore?.trim() || undefined;
   const normalizedNotAfter = notAfter?.trim() || undefined;
   const normalizedPausedUntil = pausedUntil?.trim() || undefined;
+  // Спринт 27: дни недели, политика окна и glob/git-фильтры.
+  const normalizeGlobList = (raw?: string[]): string[] | undefined => {
+    if (!Array.isArray(raw)) return undefined;
+    const cleaned = Array.from(
+      new Set(
+        raw
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      )
+    );
+    return cleaned.length > 0 ? cleaned : undefined;
+  };
+  const normalizedActiveDays = normalizeActiveDays(triggerExtras?.activeDays);
+  const normalizedWindowPolicy =
+    triggerExtras?.windowPolicy === "skip" || triggerExtras?.windowPolicy === "run"
+      ? triggerExtras.windowPolicy
+      : undefined;
+  const normalizedWatchGlobs = normalizeGlobList(triggerExtras?.watchGlobs);
+  const normalizedWatchIgnore = normalizeGlobList(triggerExtras?.watchIgnore);
+  const normalizedGitBranch = triggerExtras?.gitBranch?.trim() || undefined;
+  const normalizedGitPaths = normalizeGlobList(triggerExtras?.gitPaths);
+  const normalizedGitIgnore = normalizeGlobList(triggerExtras?.gitIgnore);
+  const normalizedGitPollSeconds =
+    typeof triggerExtras?.gitPollSeconds === "number" &&
+    Number.isFinite(triggerExtras.gitPollSeconds) &&
+    triggerExtras.gitPollSeconds >= 5
+      ? Math.floor(triggerExtras.gitPollSeconds)
+      : undefined;
   const normalizedMcpEvent =
     mcpEvent && mcpEvent.event?.trim()
       ? {
@@ -4169,6 +4444,22 @@ async function schedulerCreateTask(
   if (effectiveTriggerType === "mcp-event" && !normalizedMcpEvent) {
     throw new Error("Для MCP-триггера нужно указать имя события (mcpEvent.event).");
   }
+  // Спринт 27: git-триггеру нужен git-репозиторий в рабочей директории.
+  if (effectiveTriggerType === "git") {
+    const gitCwd = workspaceId?.trim()
+      ? getWorkspace(workspaceId.trim())?.path
+      : workingDirectory?.trim() || projectDirectory || process.cwd();
+    if (!gitCwd) {
+      throw new Error(
+        `Задача "${name}": для git-триггера нужна рабочая директория или workspace.`
+      );
+    }
+    if (!readGitBranch(gitCwd)) {
+      throw new Error(
+        `Задача "${name}": git-триггер требует git-репозиторий в "${gitCwd}".`
+      );
+    }
+  }
   // Валидируем cron-выражение до создания файлов. Для file/mcp-event
   // расписание не используется вовсе.
   if (effectiveTriggerType === "cron") {
@@ -4193,6 +4484,14 @@ async function schedulerCreateTask(
       throw new Error(`Задача "${name}": ${windowError}`);
     }
   }
+  // Спринт 27: окно и дни недели применимы и к событийным триггерам
+  // (file/git/mcp-event/once) — проверяем корректность до создания задачи.
+  if (effectiveTriggerType !== "cron") {
+    const windowError = validateLaunchWindow(normalizedNotBefore, normalizedNotAfter);
+    if (windowError) {
+      throw new Error(`Задача "${name}": ${windowError}`);
+    }
+  }
 
   const sanitized = sanitizeName(name);
   const lockFile = lockFilePath(sanitized);
@@ -4205,7 +4504,9 @@ async function schedulerCreateTask(
           schedule,
           normalizedTz,
           normalizedNotBefore,
-          normalizedNotAfter
+          normalizedNotAfter,
+          normalizedActiveDays,
+          normalizedWindowPolicy
         )
       : undefined;
   const wrapperGate = gate
@@ -4374,6 +4675,15 @@ async function schedulerCreateTask(
     timezone: normalizedTz,
     notBefore: normalizedNotBefore,
     notAfter: normalizedNotAfter,
+    // Спринт 27: дни недели, политика окна, glob- и git-фильтры.
+    activeDays: normalizedActiveDays,
+    windowPolicy: normalizedWindowPolicy,
+    watchGlobs: normalizedWatchGlobs,
+    watchIgnore: normalizedWatchIgnore,
+    gitBranch: normalizedGitBranch,
+    gitPaths: normalizedGitPaths,
+    gitIgnore: normalizedGitIgnore,
+    gitPollSeconds: normalizedGitPollSeconds,
     pausedUntil: normalizedPausedUntil,
     allowedTools: normalizedAllowedTools,
     deniedTools: normalizedDeniedTools,

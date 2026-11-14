@@ -34,7 +34,7 @@ export interface TaskTemplate {
   nextTaskOnError?: string;
   /** DAG-зависимости: задачи, которые должны успешно завершиться раньше этой. */
   dependsOn?: string[];
-  triggerType?: "cron" | "file" | "mcp-event";
+  triggerType?: "cron" | "file" | "git" | "mcp-event";
   /** Параметры MCP-события (для triggerType === "mcp-event"). */
   mcpEvent?: { server: string; event: string; filter?: string };
   watchPath?: string;
