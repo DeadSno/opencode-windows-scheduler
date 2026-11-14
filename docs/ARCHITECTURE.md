@@ -304,7 +304,7 @@ never requires a manual migration.
 
 | Interface | Audience | Entry point |
 | --- | --- | --- |
-| Agent tools | AI agent | 12 tools registered via `ctx.tool.transform` |
+| Agent tools | AI agent | 22 tools registered via `ctx.tool.transform` |
 | Agent skill | AI agent | `skills/scheduled-job-best-practices` |
 | RPC | Sidebar GUI | `src/rpc.ts` contracts, ~30 methods |
 | Sidebar GUI | Human | `gui-experimental.cjs` |
