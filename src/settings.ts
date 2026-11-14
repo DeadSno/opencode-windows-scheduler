@@ -60,11 +60,52 @@ export interface DigestSettings {
   lastSentAt: string | null;
 }
 
+/** parse_mode для Telegram Bot API. Пустая строка — plain text. */
+export type TelegramParseMode = "" | "HTML" | "Markdown" | "MarkdownV2";
+
+/** Telegram-канал уведомлений (Спринт 25). */
+export interface TelegramNotificationSettings {
+  /** Включён ли Telegram-канал. */
+  enabled: boolean;
+  /** Токен бота из @BotFather. Хранится только локально. */
+  botToken: string;
+  /** ID чата или канала-получателя. */
+  chatId: string;
+  /** Разметка сообщения; пусто — plain text. */
+  parseMode: TelegramParseMode;
+  /** Отправлять без звука. */
+  disableNotification: boolean;
+  /** ID темы в супергруппе (forum topic), null — обычное сообщение. */
+  messageThreadId: number | null;
+  /** Добавлять ссылку на локальный дашборд. */
+  includeDashboardLink: boolean;
+  /** База API; по умолчанию https://api.telegram.org. */
+  apiBase: string;
+}
+
+/** Нативные уведомления ОС (Спринт 25). */
+export interface NativeNotificationSettings {
+  /** Windows Toast, macOS Notification Center, Linux notify-send. */
+  enabled: boolean;
+  /** Со звуком (где поддерживается). */
+  sound: boolean;
+}
+
+/** Тихие часы (Спринт 25): success/partial подавляются, ошибки проходят. */
+export interface QuietHoursSettings {
+  /** Включён ли режим тихих часов. */
+  enabled: boolean;
+  /** Начало в HH:MM (локальное время). */
+  from: string;
+  /** Конец в HH:MM; диапазон может переходить через полночь. */
+  to: string;
+}
+
 /**
  * Уведомления о завершении задач.
  *
- * ntfy.sh намеренно не поддерживается: остаётся только webhook, который
- * работает с Discord, Slack и любым generic-эндпоинтом.
+ * Каналы: webhook (Discord/Slack/generic), Telegram Bot API и нативные
+ * уведомления ОС. Все каналы опциональны и не зависят друг от друга.
  */
 export interface NotificationSettings {
   /** Главный выключатель уведомлений. */
@@ -73,6 +114,14 @@ export interface NotificationSettings {
   onlyOnError: boolean;
   /** Webhook-канал. */
   webhook?: WebhookNotificationSettings;
+  /** Telegram-канал. */
+  telegram?: TelegramNotificationSettings;
+  /** Нативные уведомления ОС. */
+  native?: NativeNotificationSettings;
+  /** Тихие часы. */
+  quietHours?: QuietHoursSettings;
+  /** Переопределение ссылки на дашборд; пусто — порт берётся у сервера. */
+  dashboardUrl?: string;
   /** Шаблоны сообщений. */
   templates?: NotificationTemplates;
   /** Фильтры по задачам. */
@@ -241,10 +290,30 @@ export function defaultNotifications(): NotificationSettings {
       retryDelayMs: DEFAULT_WEBHOOK_RETRY_DELAY_MS,
     },
     templates: {
-      success: '✅ Задача "{task}" выполнена ({duration})',
-      error: '❌ Задача "{task}" упала ({duration}){error}',
+      success: '✅ Задача "{task}" выполнена ({duration}){cost}',
+      error: '❌ Задача "{task}" упала ({duration}){error}{cost}',
     },
     filters: { include: [], exclude: [] },
+    telegram: {
+      enabled: false,
+      botToken: "",
+      chatId: "",
+      parseMode: "HTML",
+      disableNotification: false,
+      messageThreadId: null,
+      includeDashboardLink: true,
+      apiBase: "https://api.telegram.org",
+    },
+    native: {
+      enabled: false,
+      sound: true,
+    },
+    quietHours: {
+      enabled: false,
+      from: "22:00",
+      to: "08:00",
+    },
+    dashboardUrl: "",
     matrix: {
       enabled: true,
       onPartial: true,
@@ -311,6 +380,30 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** Приводит parse_mode Telegram к допустимому значению. */
+function normalizeTelegramParseMode(
+  value: unknown,
+  fallback: TelegramParseMode
+): TelegramParseMode {
+  return value === "" || value === "HTML" || value === "Markdown" || value === "MarkdownV2"
+    ? value
+    : fallback;
+}
+
+/** Проверяет http(s)-базу API; иначе возвращает fallback. */
+function normalizeHttpBase(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) return fallback;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return fallback;
+    return trimmed;
+  } catch {
+    return fallback;
+  }
+}
+
 /** Приводит настройки уведомлений к безопасному виду. */
 function normalizeNotifications(
   value: unknown,
@@ -321,6 +414,9 @@ function normalizeNotifications(
   const fallbackFilters = fallback.filters ?? { include: [], exclude: [] };
   const fallbackMatrix = fallback.matrix ?? defaultNotifications().matrix!;
   const fallbackDigest = fallback.digest ?? defaultNotifications().digest!;
+  const fallbackTelegram = fallback.telegram ?? defaultNotifications().telegram!;
+  const fallbackNative = fallback.native ?? defaultNotifications().native!;
+  const fallbackQuiet = fallback.quietHours ?? defaultNotifications().quietHours!;
 
   const raw = asRecord(value);
   if (!raw) {
@@ -334,6 +430,10 @@ function normalizeNotifications(
       },
       matrix: { ...fallbackMatrix },
       digest: { ...fallbackDigest },
+      telegram: { ...fallbackTelegram },
+      native: { ...fallbackNative },
+      quietHours: { ...fallbackQuiet },
+      dashboardUrl: fallback.dashboardUrl ?? "",
     };
   }
 
@@ -342,6 +442,9 @@ function normalizeNotifications(
   const rawFilters = asRecord(raw.filters);
   const rawMatrix = asRecord(raw.matrix);
   const rawDigest = asRecord(raw.digest);
+  const rawTelegram = asRecord(raw.telegram);
+  const rawNative = asRecord(raw.native);
+  const rawQuiet = asRecord(raw.quietHours);
 
   const frequency: DigestFrequency =
     rawDigest?.frequency === "weekly" || rawDigest?.frequency === "daily"
@@ -399,6 +502,61 @@ function normalizeNotifications(
       include: normalizeNameList(rawFilters?.include, fallbackFilters.include),
       exclude: normalizeNameList(rawFilters?.exclude, fallbackFilters.exclude),
     },
+    telegram: {
+      enabled:
+        typeof rawTelegram?.enabled === "boolean"
+          ? rawTelegram.enabled
+          : fallbackTelegram.enabled,
+      botToken:
+        typeof rawTelegram?.botToken === "string"
+          ? rawTelegram.botToken.trim().slice(0, 512)
+          : fallbackTelegram.botToken,
+      chatId:
+        typeof rawTelegram?.chatId === "string"
+          ? rawTelegram.chatId.trim().slice(0, 128)
+          : fallbackTelegram.chatId,
+      parseMode: normalizeTelegramParseMode(
+        rawTelegram?.parseMode,
+        fallbackTelegram.parseMode
+      ),
+      disableNotification:
+        typeof rawTelegram?.disableNotification === "boolean"
+          ? rawTelegram.disableNotification
+          : fallbackTelegram.disableNotification,
+      messageThreadId:
+        rawTelegram?.messageThreadId === null
+          ? null
+          : Number.isFinite(Number(rawTelegram?.messageThreadId))
+            ? Math.max(0, Math.floor(Number(rawTelegram?.messageThreadId)))
+            : fallbackTelegram.messageThreadId,
+      includeDashboardLink:
+        typeof rawTelegram?.includeDashboardLink === "boolean"
+          ? rawTelegram.includeDashboardLink
+          : fallbackTelegram.includeDashboardLink,
+      apiBase: normalizeHttpBase(rawTelegram?.apiBase, fallbackTelegram.apiBase),
+    },
+    native: {
+      enabled:
+        typeof rawNative?.enabled === "boolean"
+          ? rawNative.enabled
+          : fallbackNative.enabled,
+      sound:
+        typeof rawNative?.sound === "boolean"
+          ? rawNative.sound
+          : fallbackNative.sound,
+    },
+    quietHours: {
+      enabled:
+        typeof rawQuiet?.enabled === "boolean"
+          ? rawQuiet.enabled
+          : fallbackQuiet.enabled,
+      from: normalizeDailyTime(rawQuiet?.from, fallbackQuiet.from),
+      to: normalizeDailyTime(rawQuiet?.to, fallbackQuiet.to),
+    },
+    dashboardUrl:
+      typeof raw.dashboardUrl === "string"
+        ? raw.dashboardUrl.trim().slice(0, 500)
+        : (fallback.dashboardUrl ?? ""),
     matrix: {
       enabled:
         typeof rawMatrix?.enabled === "boolean"

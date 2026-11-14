@@ -39,7 +39,7 @@ Want to see it without installing OpenCode? `node scripts/demo-dashboard.mjs` st
 | Triggers | cron, one-shot (`triggerType: "once"`), file change (chokidar), MCP events, incoming webhooks (`POST /api/hooks/:task` with HMAC) |
 | Multi-repo | workspaces with path validation, per-workspace runs, matrix over one parent task |
 | Observability | SQLite history (success / error / timeout / partial / running), metrics (duration, tokens, cost), JSONL run logs with `/api/logs`, Prometheus `/metrics`, OTLP export, per-task logs, local web dashboard with 14-day analytics, history retention and CSV/JSON export |
-| Operations | dry-run preview, export/import JSON, templates, webhook notifications, settings |
+| Operations | dry-run preview, export/import JSON, templates, multi-channel notifications (webhook, Telegram, native OS toasts), quiet hours, digest, settings |
 | Interfaces | OpenCode GUI panel, web dashboard, 22 agent tools, built-in agent skill |
 
 ## Install
@@ -103,7 +103,7 @@ The agent gets the full feature set — 22 tools covering scheduling, pipelines,
 | `manage_templates` | `action`, template fields | List, save or delete reusable task templates |
 | `manage_profiles` | `action`, `name?`, `port?` | List, create, switch or delete isolated profiles |
 | `transfer_tasks` | `action`, `data?` | Export all tasks to JSON or import them back |
-| `send_notification` | `action` (`test`/`digest`) | Test the notification channel or send the digest |
+| `send_notification` | `action` (`test`/`digest`), `channel?` (`all`/`webhook`/`telegram`/`native`) | Test the notification channels or send the digest |
 | `get_dashboard_info` | — | Dashboard port/URL, platform, title, active profile |
 | `cleanup_history` | `retentionDays?`, `maxRecords?` | Delete old history by age and/or record cap |
 | `emit_event` | `eventName`, `payload?` | Start tasks subscribed to an MCP event |
@@ -159,6 +159,8 @@ src/
     dry-run.ts          pipeline simulation
     lock.ts             no-overlap protection
     file-watcher.ts     chokidar triggers
+    telegram.ts         Telegram Bot API delivery
+    native-notify.ts    Windows Toast / macOS / Linux notifications
   db/                   SQLite: tasks, history, metrics, settings
   task-transfer.ts      export / import / validation
 ```
@@ -171,7 +173,7 @@ Job wrappers run `opencode run` in the task working directory, so project MCP se
 npm install
 npm run build        # tsc
 npm run build:gui    # vite
-npm test             # 26 test suites, 500+ checks
+npm test             # 27 test suites, 500+ checks
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
@@ -193,6 +195,15 @@ Windows (Task Scheduler), macOS (launchd) and Linux (crontab). Backend differenc
 
 **Where does my data go?**
 Nowhere. History, logs, metrics and settings are stored locally in SQLite. No telemetry, no accounts, no cloud.
+
+**How do I get Telegram notifications?**
+Create a bot with [@BotFather](https://t.me/BotFather), copy the token, send the bot a message and read `chat_id` from `getUpdates` (or use a group/channel ID). Paste both in the sidebar panel or run `manage_settings` with `notifications.telegram` (`enabled`, `botToken`, `chatId`, optional `parseMode`). To keep secrets out of `settings.json`, set `OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN` and `OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID` instead — environment values are used when the fields are empty. Use `send_notification` with `channel: "telegram"` to verify.
+
+**Do I need an extra package for desktop notifications?**
+No. Windows Toast (PowerShell/WinRT), macOS Notification Center (`osascript`) and Linux `notify-send` are called directly, so `node-notifier` is not required. Enable them with `notifications.native.enabled`.
+
+**Can I silence notifications at night?**
+Yes. Set `notifications.quietHours` (`enabled`, `from`, `to` in `HH:MM`). During the window successful and `partial` runs are suppressed, while failures and timeouts are always delivered.
 
 **How is this different from `experimental.schedules`?**
 The built-in scheduler runs jobs while OpenCode is open. This plugin uses the native OS scheduler and adds DAG pipelines, matrix builds, quality gates, webhooks and observability.

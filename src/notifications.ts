@@ -13,6 +13,8 @@ import {
   type ErrorAnalyticsRow,
 } from "./core/analytics.js";
 import { getHistory } from "./db/history-repo.js";
+import { sendTelegramMessage } from "./core/telegram.js";
+import { sendNativeNotification } from "./core/native-notify.js";
 
 /** Статус завершения задачи, который приходит из record-history. */
 export type NotificationStatus = "success" | "error" | "timeout" | string;
@@ -23,6 +25,10 @@ export interface NotificationPayload {
   status: NotificationStatus;
   durationMs: number;
   error?: string | null;
+  /** Потраченные токены, если известны. */
+  tokens?: number | null;
+  /** Стоимость запуска в USD, если известна. */
+  costUsd?: number | null;
 }
 
 /** Таймаут HTTP-запроса по умолчанию: уведомление не должно подвешивать задачу. */
@@ -95,6 +101,18 @@ export function formatNotificationMessage(
   const isSuccess = status === "success";
   const reason =
     typeof error === "string" && error.trim() ? `: ${error.trim()}` : "";
+  const tokens =
+    typeof payload.tokens === "number" && payload.tokens > 0
+      ? String(Math.round(payload.tokens))
+      : "";
+  const cost =
+    typeof payload.costUsd === "number" && payload.costUsd > 0
+      ? `$${payload.costUsd.toFixed(4)}`
+      : "";
+  const usage = [tokens ? `${tokens} tok` : "", cost].filter(Boolean).join(" · ");
+  const usageSuffix = usage ? ` · ${usage}` : "";
+  const costVar = usageSuffix;
+  const tokensVar = tokens;
 
   if (templates && isSuccess && templates.success.trim()) {
     return renderTemplate(templates.success, {
@@ -103,6 +121,8 @@ export function formatNotificationMessage(
       duration,
       error: "",
       emoji: "✅",
+      cost: costVar,
+      tokens: tokensVar,
     });
   }
   if (templates && !isSuccess && templates.error.trim()) {
@@ -112,13 +132,15 @@ export function formatNotificationMessage(
       duration,
       error: reason,
       emoji: "❌",
+      cost: costVar,
+      tokens: tokensVar,
     });
   }
 
   if (isSuccess) {
-    return `✅ Задача "${taskName}" выполнена (${duration})`;
+    return `✅ Задача "${taskName}" выполнена (${duration})${usageSuffix}`;
   }
-  return `❌ Задача "${taskName}" упала (${duration})${reason}`;
+  return `❌ Задача "${taskName}" упала (${duration})${reason}${usageSuffix}`;
 }
 
 /** Информация о завершении матрицы для уведомления. */
@@ -270,22 +292,149 @@ function webhookOptionsFrom(config: NotificationSettings): WebhookOptions {
   };
 }
 
-/** Отправляет текст во включённый webhook; ошибки только логируются. */
-async function deliver(config: NotificationSettings, message: string): Promise<boolean> {
-  const webhook = config.webhook;
-  if (!webhook?.enabled || !webhook.url.trim()) return false;
-  try {
-    await sendWebhook(webhook.url, message, webhookOptionsFrom(config));
-    console.log(`[windows-scheduler] Уведомление отправлено в webhook: ${message}`);
-    return true;
-  } catch (err: any) {
-    console.error(
-      `[windows-scheduler] Не удалось отправить webhook-уведомление: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+/** Канал доставки уведомлений. */
+export type NotificationChannel = "webhook" | "telegram" | "native";
+
+/** Результат отправки в один канал. */
+export interface ChannelDeliveryResult {
+  channel: NotificationChannel;
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Тихие часы: true, если сейчас действует окно `quiet`. Диапазон может
+ * переходить через полночь (22:00 → 08:00). Некорректное время — false.
+ */
+export function isQuietHours(
+  now: Date,
+  quiet?: { enabled?: boolean; from?: string; to?: string } | null
+): boolean {
+  if (!quiet?.enabled) return false;
+  const parse = (value: unknown): number | null => {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(
+      typeof value === "string" ? value.trim() : ""
     );
-    return false;
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+  };
+  const from = parse(quiet.from);
+  const to = parse(quiet.to);
+  if (from === null || to === null) return false;
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  if (from === to) return true;
+  if (from < to) return minutes >= from && minutes < to;
+  return minutes >= from || minutes < to;
+}
+
+/** URL дашборда: настройка, иначе фактический порт сервера, иначе null. */
+async function resolveDashboardUrl(
+  config: NotificationSettings
+): Promise<string | null> {
+  const custom = (config.dashboardUrl ?? "").trim();
+  if (custom) return custom;
+  try {
+    const { getDashboardPort } = await import("./server.js");
+    const port = getDashboardPort();
+    return port ? `http://localhost:${port}` : null;
+  } catch {
+    return null;
   }
+}
+
+/** Токен и chat_id Telegram: настройки важнее переменных окружения. */
+function telegramCredentials(config: NotificationSettings): {
+  token: string;
+  chatId: string;
+} {
+  const token =
+    (config.telegram?.botToken ?? "").trim() ||
+    (process.env.OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN ?? "").trim();
+  const chatId =
+    (config.telegram?.chatId ?? "").trim() ||
+    (process.env.OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID ?? "").trim();
+  return { token, chatId };
+}
+
+/**
+ * Отправляет сообщение во все включённые каналы и возвращает результат
+ * по каждому. Ошибки каналов не прерывают остальные и не содержат секретов.
+ */
+async function deliverDetailed(
+  config: NotificationSettings,
+  message: string,
+  only?: NotificationChannel
+): Promise<ChannelDeliveryResult[]> {
+  const results: ChannelDeliveryResult[] = [];
+  const dashboardUrl = await resolveDashboardUrl(config);
+
+  const webhook = config.webhook;
+  if (
+    (!only || only === "webhook") &&
+    config.enabled &&
+    webhook?.enabled &&
+    webhook.url.trim()
+  ) {
+    try {
+      await sendWebhook(webhook.url, message, webhookOptionsFrom(config));
+      console.log("[windows-scheduler] Уведомление отправлено в webhook.");
+      results.push({ channel: "webhook", ok: true });
+    } catch (err: any) {
+      const text = err instanceof Error ? err.message : String(err);
+      console.error(`[windows-scheduler] Webhook: ${text}`);
+      results.push({ channel: "webhook", ok: false, error: text });
+    }
+  }
+
+  const telegram = config.telegram;
+  if ((!only || only === "telegram") && config.enabled && telegram?.enabled) {
+    const { token, chatId } = telegramCredentials(config);
+    if (!token || !chatId) {
+      const text = "Telegram включён, но не заданы botToken/chatId.";
+      console.error(`[windows-scheduler] ${text}`);
+      results.push({ channel: "telegram", ok: false, error: text });
+    } else {
+      try {
+        await sendTelegramMessage(token, chatId, message, {
+          apiBase: telegram.apiBase,
+          parseMode: telegram.parseMode,
+          disableNotification: telegram.disableNotification,
+          messageThreadId: telegram.messageThreadId,
+          includeDashboardLink: telegram.includeDashboardLink,
+          dashboardUrl,
+        });
+        console.log("[windows-scheduler] Уведомление отправлено в Telegram.");
+        results.push({ channel: "telegram", ok: true });
+      } catch (err: any) {
+        const text = err instanceof Error ? err.message : String(err);
+        console.error(`[windows-scheduler] Telegram: ${text}`);
+        results.push({ channel: "telegram", ok: false, error: text });
+      }
+    }
+  }
+
+  const native = config.native;
+  if ((!only || only === "native") && config.enabled && native?.enabled) {
+    const result = await sendNativeNotification(
+      { title: "OpenCode Scheduler", body: message, sound: native.sound },
+      {}
+    );
+    if (result.success) {
+      console.log("[windows-scheduler] Нативное уведомление показано.");
+      results.push({ channel: "native", ok: true });
+    } else {
+      const text = result.error ?? "не удалось показать уведомление";
+      console.error(`[windows-scheduler] Нативное уведомление: ${text}`);
+      results.push({ channel: "native", ok: false, error: text });
+    }
+  }
+
+  return results;
+}
+
+/** Отправляет текст во все включённые каналы; true — хотя бы один успешен. */
+async function deliver(config: NotificationSettings, message: string): Promise<boolean> {
+  const results = await deliverDetailed(config, message);
+  return results.some((item) => item.ok);
 }
 
 /**
@@ -301,7 +450,9 @@ export async function notifyTaskCompletion(
   taskName: string,
   status: NotificationStatus,
   durationMs: number,
-  error?: string | null
+  error?: string | null,
+  tokens?: number | null,
+  costUsd?: number | null
 ): Promise<void> {
   try {
     const settings = await loadSettings();
@@ -309,9 +460,17 @@ export async function notifyTaskCompletion(
     if (!config?.enabled) return;
     if (config.onlyOnError && status === "success") return;
     if (!isTaskAllowed(taskName, config.filters)) return;
+    // Тихие часы подавляют успешные запуски, но не ошибки и таймауты.
+    if (
+      isQuietHours(new Date(), config.quietHours) &&
+      status !== "error" &&
+      status !== "timeout"
+    ) {
+      return;
+    }
 
     const message = formatNotificationMessage(
-      { taskName, status, durationMs, error },
+      { taskName, status, durationMs, error, tokens, costUsd },
       config.templates
     );
     await deliver(config, message);
@@ -345,6 +504,9 @@ export async function notifyMatrixCompletion(
     if (info.status === "partial" && !matrix.onPartial) return;
     if (info.status === "error" && !matrix.onAllFailed) return;
     if (info.status === "success" && config.onlyOnError) return;
+    if (isQuietHours(new Date(), config.quietHours) && info.status !== "error") {
+      return;
+    }
 
     await deliver(config, formatMatrixMessage(info));
   } catch (err: any) {
@@ -547,9 +709,15 @@ export async function sendDigestNow(
     if (!config?.enabled) {
       return { success: false, message: "Уведомления выключены." };
     }
-    const webhook = config.webhook;
-    if (!webhook?.enabled || !webhook.url.trim()) {
-      return { success: false, message: "Webhook выключен. Включите канал и укажите URL." };
+    const channels: NotificationChannel[] = [];
+    if (config.webhook?.enabled && config.webhook.url.trim()) channels.push("webhook");
+    if (config.telegram?.enabled) channels.push("telegram");
+    if (config.native?.enabled) channels.push("native");
+    if (channels.length === 0) {
+      return {
+        success: false,
+        message: "Все каналы выключены. Включите webhook, Telegram или нативные уведомления.",
+      };
     }
     const digest = config.digest;
     if (!digest) {
@@ -562,7 +730,9 @@ export async function sendDigestNow(
       now,
     });
     const text = formatDigestMessage(summary, now);
-    await sendWebhook(webhook.url, text, webhookOptionsFrom(config));
+    if (!(await deliver(config, text))) {
+      return { success: false, message: "Не удалось отправить дайджест ни в один канал." };
+    }
 
     if (options.updateLastSentAt) {
       await saveSettings({
@@ -608,39 +778,61 @@ export async function maybeSendDigest(now: Date = new Date()): Promise<boolean> 
 }
 
 /**
- * Отправляет тестовое сообщение в webhook (кнопка «🧪 Тестовое уведомление»).
- *
- * В отличие от notifyTaskCompletion, результат возвращается пользователю:
- * при тесте важно увидеть причину ошибки.
+ * Отправляет тестовое сообщение в выбранный канал или во все включённые
+ * (кнопка «🧪 Тестовое уведомление»). В отличие от notifyTaskCompletion,
+ * результат возвращается пользователю: при тесте важна причина ошибки.
  */
-export async function sendTestNotification(): Promise<{
+export async function sendTestNotification(
+  channel: "all" | NotificationChannel = "all"
+): Promise<{
   success: boolean;
   message: string;
 }> {
   try {
     const settings = await loadSettings();
-    const webhook = settings.notifications?.webhook;
-
-    if (!webhook?.enabled) {
+    const config = settings.notifications;
+    if (!config?.enabled) {
       return {
         success: false,
-        message: "Webhook выключен. Включите канал и укажите URL.",
+        message: "Уведомления выключены. Включите главный переключатель.",
       };
     }
-    if (!webhook.url.trim()) {
-      return { success: false, message: "Не задан URL вебхука." };
+
+    const enabled: NotificationChannel[] = [];
+    if (config.webhook?.enabled && config.webhook.url.trim()) enabled.push("webhook");
+    if (config.telegram?.enabled) enabled.push("telegram");
+    if (config.native?.enabled) enabled.push("native");
+    if (enabled.length === 0) {
+      return {
+        success: false,
+        message:
+          "Все каналы выключены. Включите webhook, Telegram или нативные уведомления.",
+      };
+    }
+    if (channel !== "all" && !enabled.includes(channel)) {
+      return { success: false, message: `Канал ${channel} выключен.` };
     }
 
-    await sendWebhook(
-      webhook.url,
-      "🧪 Тестовое уведомление от OpenCode Scheduler — webhook настроен корректно.",
-      {
-        timeoutMs: webhook.timeoutMs,
-        retryCount: webhook.retryCount,
-        retryDelayMs: webhook.retryDelayMs,
-      }
+    const results = await deliverDetailed(
+      config,
+      "🧪 Тестовое уведомление от OpenCode Scheduler — канал настроен корректно.",
+      channel === "all" ? undefined : channel
     );
-    return { success: true, message: "Тестовое уведомление отправлено." };
+    const sent = results.filter((item) => item.ok).map((item) => item.channel);
+    const failed = results.filter((item) => !item.ok);
+    const parts: string[] = [];
+    if (sent.length > 0) parts.push(`Отправлено: ${sent.join(", ")}.`);
+    if (failed.length > 0) {
+      parts.push(
+        `Ошибки: ${failed
+          .map((item) => `${item.channel} — ${item.error ?? "неизвестная ошибка"}`)
+          .join("; ")}.`
+      );
+    }
+    return {
+      success: failed.length === 0 && sent.length > 0,
+      message: parts.join(" ") || "Тестовое уведомление не отправлено.",
+    };
   } catch (err: any) {
     return {
       success: false,

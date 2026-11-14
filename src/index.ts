@@ -681,7 +681,7 @@ export const manageSettingsSchema = z.object({
   notifications: z
     .any()
     .optional()
-    .describe("Notification settings patch (enabled, onlyOnError, webhook, templates, filters, matrix, digest)."),
+    .describe("Notification settings patch (enabled, onlyOnError, webhook, telegram, native, quietHours, templates, filters, matrix, digest)."),
   history: z
     .object({
       retentionDays: z.number().int().min(1).max(3650).optional(),
@@ -751,6 +751,10 @@ export const sendNotificationSchema = z.object({
   action: z
     .enum(["test", "digest"])
     .describe("test — send a test message through the configured channel; digest — send the digest now."),
+  channel: z
+    .enum(["all", "webhook", "telegram", "native"])
+    .optional()
+    .describe("For action=test: which channel to check (default all enabled)."),
 });
 
 /** get_dashboard_info — сведения о панели управления. */
@@ -2161,7 +2165,7 @@ const transferTasksExecute = wrapExecute<TransferArgs>(async (args) => {
 const sendNotificationExecute = wrapExecute<NotificationArgs>(async (args) => {
   const result =
     args.action === "test"
-      ? await sendTestNotification()
+      ? await sendTestNotification(args.channel ?? "all")
       : await sendDigestNow({ updateLastSentAt: false });
   return { content: JSON.stringify(result) };
 });
@@ -2565,7 +2569,7 @@ export default Plugin.define({
         name: "manage_settings",
         input: manageSettingsSchema,
         description:
-          "Reads or updates global scheduler settings: maxConcurrent, winterMode, notifications (webhook, filters, matrix alerts, digest) and history retention. Updates are merged into the current settings.",
+          "Reads or updates global scheduler settings: maxConcurrent, winterMode, notifications (webhook, Telegram, native OS notifications, quiet hours, filters, matrix alerts, digest) and history retention. Updates are merged into the current settings.",
         options: { codemode: true },
         execute: manageSettingsExecute as any,
       });

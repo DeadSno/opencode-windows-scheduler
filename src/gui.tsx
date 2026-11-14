@@ -39,6 +39,19 @@ interface NotificationSettings {
   }
   templates?: { success: string; error: string }
   filters?: { include: string[]; exclude: string[] }
+  telegram?: {
+    enabled: boolean
+    botToken: string
+    chatId: string
+    parseMode: "" | "HTML" | "Markdown" | "MarkdownV2"
+    disableNotification: boolean
+    messageThreadId: number | null
+    includeDashboardLink: boolean
+    apiBase: string
+  }
+  native?: { enabled: boolean; sound: boolean }
+  quietHours?: { enabled: boolean; from: string; to: string }
+  dashboardUrl?: string
   matrix?: {
     enabled: boolean
     onPartial: boolean
@@ -348,6 +361,20 @@ export default Plugin.define({
     const [digestFrequency, setDigestFrequency] = createSignal<"daily" | "weekly">("daily")
     const [digestTime, setDigestTime] = createSignal("09:00")
     const [digestLastSentAt, setDigestLastSentAt] = createSignal<string | null>(null)
+    // Спринт 25: Telegram, нативные уведомления и тихие часы.
+    const [telegramEnabled, setTelegramEnabled] = createSignal(false)
+    const [telegramBotToken, setTelegramBotToken] = createSignal("")
+    const [telegramChatId, setTelegramChatId] = createSignal("")
+    const [telegramParseMode, setTelegramParseMode] = createSignal<"" | "HTML" | "Markdown" | "MarkdownV2">("HTML")
+    const [telegramSilent, setTelegramSilent] = createSignal(false)
+    const [telegramLink, setTelegramLink] = createSignal(true)
+    const [telegramApiBase, setTelegramApiBase] = createSignal("https://api.telegram.org")
+    const [telegramThreadId, setTelegramThreadId] = createSignal<number | null>(null)
+    const [nativeEnabled, setNativeEnabled] = createSignal(false)
+    const [nativeSound, setNativeSound] = createSignal(true)
+    const [quietEnabled, setQuietEnabled] = createSignal(false)
+    const [quietFrom, setQuietFrom] = createSignal("22:00")
+    const [quietTo, setQuietTo] = createSignal("08:00")
     const [digestBusy, setDigestBusy] = createSignal(false)
 
     // Настройки ретеншна истории (Спринт 18): очистка старых записей.
@@ -399,6 +426,19 @@ export default Plugin.define({
       setDigestFrequency(n?.digest?.frequency === "weekly" ? "weekly" : "daily")
       setDigestTime(n?.digest?.time ?? "09:00")
       setDigestLastSentAt(n?.digest?.lastSentAt ?? null)
+      setTelegramEnabled(Boolean(n?.telegram?.enabled))
+      setTelegramBotToken(n?.telegram?.botToken ?? "")
+      setTelegramChatId(n?.telegram?.chatId ?? "")
+      setTelegramParseMode((n?.telegram?.parseMode ?? "HTML") as "" | "HTML" | "Markdown" | "MarkdownV2")
+      setTelegramSilent(Boolean(n?.telegram?.disableNotification))
+      setTelegramLink(n?.telegram?.includeDashboardLink !== false)
+      setTelegramApiBase(n?.telegram?.apiBase ?? "https://api.telegram.org")
+      setTelegramThreadId(typeof n?.telegram?.messageThreadId === "number" ? n.telegram.messageThreadId : null)
+      setNativeEnabled(Boolean(n?.native?.enabled))
+      setNativeSound(n?.native?.sound !== false)
+      setQuietEnabled(Boolean(n?.quietHours?.enabled))
+      setQuietFrom(n?.quietHours?.from ?? "22:00")
+      setQuietTo(n?.quietHours?.to ?? "08:00")
     }
 
     async function loadSettingsGui() {
@@ -441,6 +481,25 @@ export default Plugin.define({
         filters: {
           include: splitList(filterInclude()),
           exclude: splitList(filterExclude()),
+        },
+        telegram: {
+          enabled: telegramEnabled(),
+          botToken: (telegramBotToken() || "").trim(),
+          chatId: (telegramChatId() || "").trim(),
+          parseMode: telegramParseMode(),
+          disableNotification: telegramSilent(),
+          messageThreadId: telegramThreadId(),
+          includeDashboardLink: telegramLink(),
+          apiBase: telegramApiBase(),
+        },
+        native: {
+          enabled: nativeEnabled(),
+          sound: nativeSound(),
+        },
+        quietHours: {
+          enabled: quietEnabled(),
+          from: (quietFrom() || "22:00").trim(),
+          to: (quietTo() || "08:00").trim(),
         },
         matrix: {
           enabled: matrixNotifyEnabled(),
@@ -2499,6 +2558,161 @@ export default Plugin.define({
                     </div>
                   </div>
 
+                  {/* Telegram (Спринт 25) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <label style={`display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;opacity:${notificationsEnabled() ? 1 : 0.5}`}>
+                      <input
+                        type="checkbox"
+                        checked={telegramEnabled()}
+                        disabled={!notificationsEnabled()}
+                        onChange={(e) => {
+                          setTelegramEnabled(e.currentTarget.checked)
+                          void saveNotificationSettings()
+                        }}
+                        style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                      />
+                      Telegram
+                    </label>
+                    <input
+                      type="password"
+                      autocomplete="off"
+                      value={telegramBotToken() || ""}
+                      disabled={!notificationsEnabled() || !telegramEnabled()}
+                      onInput={(e) => setTelegramBotToken(e.currentTarget.value)}
+                      onChange={() => void saveNotificationSettings()}
+                      placeholder="Токен бота из @BotFather"
+                      style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;opacity:${notificationsEnabled() && telegramEnabled() ? 1 : 0.5}`}
+                    />
+                    <input
+                      type="text"
+                      value={telegramChatId() || ""}
+                      disabled={!notificationsEnabled() || !telegramEnabled()}
+                      onInput={(e) => setTelegramChatId(e.currentTarget.value)}
+                      onChange={() => void saveNotificationSettings()}
+                      placeholder="chat_id (например, 123456789 или -100...)"
+                      style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;outline:none;opacity:${notificationsEnabled() && telegramEnabled() ? 1 : 0.5}`}
+                    />
+                    <div style={`display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#b0b0b0;opacity:${notificationsEnabled() && telegramEnabled() ? 1 : 0.5}`}>
+                      <span>разметка:</span>
+                      <select
+                        value={telegramParseMode()}
+                        disabled={!notificationsEnabled() || !telegramEnabled()}
+                        onChange={(e) => {
+                          setTelegramParseMode(e.currentTarget.value as "" | "HTML" | "Markdown" | "MarkdownV2")
+                          void saveNotificationSettings()
+                        }}
+                        style="padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      >
+                        <option value="HTML">HTML</option>
+                        <option value="MarkdownV2">MarkdownV2</option>
+                        <option value="Markdown">Markdown</option>
+                        <option value="">plain text</option>
+                      </select>
+                      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input
+                          type="checkbox"
+                          checked={telegramSilent()}
+                          disabled={!notificationsEnabled() || !telegramEnabled()}
+                          onChange={(e) => {
+                            setTelegramSilent(e.currentTarget.checked)
+                            void saveNotificationSettings()
+                          }}
+                          style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                        />
+                        без звука
+                      </label>
+                      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input
+                          type="checkbox"
+                          checked={telegramLink()}
+                          disabled={!notificationsEnabled() || !telegramEnabled()}
+                          onChange={(e) => {
+                            setTelegramLink(e.currentTarget.checked)
+                            void saveNotificationSettings()
+                          }}
+                          style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                        />
+                        ссылка на дашборд
+                      </label>
+                    </div>
+                    <div style="font-size:11px;color:#8e8e93">
+                      Токен можно не хранить в settings.json: задайте OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN и OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID.
+                    </div>
+                  </div>
+
+                  {/* Нативные уведомления ОС (Спринт 25) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <label style={`display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;opacity:${notificationsEnabled() ? 1 : 0.5}`}>
+                      <input
+                        type="checkbox"
+                        checked={nativeEnabled()}
+                        disabled={!notificationsEnabled()}
+                        onChange={(e) => {
+                          setNativeEnabled(e.currentTarget.checked)
+                          void saveNotificationSettings()
+                        }}
+                        style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                      />
+                      Нативные уведомления ОС
+                    </label>
+                    <label style={`display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;opacity:${notificationsEnabled() && nativeEnabled() ? 1 : 0.5}`}>
+                      <input
+                        type="checkbox"
+                        checked={nativeSound()}
+                        disabled={!notificationsEnabled() || !nativeEnabled()}
+                        onChange={(e) => {
+                          setNativeSound(e.currentTarget.checked)
+                          void saveNotificationSettings()
+                        }}
+                        style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                      />
+                      со звуком
+                    </label>
+                    <div style="font-size:11px;color:#8e8e93">
+                      Windows Toast, macOS Notification Center, Linux notify-send. Без внешних зависимостей.
+                    </div>
+                  </div>
+
+                  {/* Тихие часы (Спринт 25) */}
+                  <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+                    <label style={`display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;opacity:${notificationsEnabled() ? 1 : 0.5}`}>
+                      <input
+                        type="checkbox"
+                        checked={quietEnabled()}
+                        disabled={!notificationsEnabled()}
+                        onChange={(e) => {
+                          setQuietEnabled(e.currentTarget.checked)
+                          void saveNotificationSettings()
+                        }}
+                        style="accent-color:#5ac8fa;cursor:pointer;margin:0"
+                      />
+                      Тихие часы
+                    </label>
+                    <div style={`display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#b0b0b0;opacity:${notificationsEnabled() && quietEnabled() ? 1 : 0.5}`}>
+                      <span>с</span>
+                      <input
+                        type="time"
+                        value={quietFrom()}
+                        disabled={!notificationsEnabled() || !quietEnabled()}
+                        onInput={(e) => setQuietFrom(e.currentTarget.value)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                      <span>до</span>
+                      <input
+                        type="time"
+                        value={quietTo()}
+                        disabled={!notificationsEnabled() || !quietEnabled()}
+                        onInput={(e) => setQuietTo(e.currentTarget.value)}
+                        onChange={() => void saveNotificationSettings()}
+                        style="padding:4px 6px;background:#1e1e1e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;outline:none"
+                      />
+                    </div>
+                    <div style="font-size:11px;color:#8e8e93">
+                      В тихие часы success и partial подавляются, ошибки и таймауты отправляются.
+                    </div>
+                  </div>
+
                   {/* Фильтры по задачам (Спринт 20) */}
                   <div style="border-top:1px solid #333;padding-top:10px;display:flex;flex-direction:column;gap:8px">
                     <div style="font-size:12px;color:#e0e0e0;font-weight:600">Фильтры по задачам</div>
@@ -2547,7 +2761,7 @@ export default Plugin.define({
                       style={`display:block;width:100%;box-sizing:border-box;padding:8px;background:#1e1e1e;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;outline:none;opacity:${notificationsEnabled() ? 1 : 0.5}`}
                     />
                     <div style="font-size:11px;color:#8e8e93">
-                      Плейсхолдеры: {"{task} {status} {duration} {error} {emoji}"}. Пусто = шаблон по умолчанию.
+                      Плейсхолдеры: {"{task} {status} {duration} {error} {emoji} {cost} {tokens}"}. Пусто = шаблон по умолчанию.
                     </div>
                   </div>
 
@@ -2662,20 +2876,20 @@ export default Plugin.define({
                   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                     <button
                       onClick={() => void handleTestNotification()}
-                      disabled={testNotificationBusy() || !webhookEnabled()}
-                      style={`padding:6px 12px;background:#007acc;color:white;border:none;border-radius:6px;cursor:${testNotificationBusy() || !webhookEnabled() ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${testNotificationBusy() || !webhookEnabled() ? 0.6 : 1}`}
+                      disabled={testNotificationBusy() || !(webhookEnabled() || telegramEnabled() || nativeEnabled())}
+                      style={`padding:6px 12px;background:#007acc;color:white;border:none;border-radius:6px;cursor:${testNotificationBusy() || !(webhookEnabled() || telegramEnabled() || nativeEnabled()) ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${testNotificationBusy() || !(webhookEnabled() || telegramEnabled() || nativeEnabled()) ? 0.6 : 1}`}
                     >
                       {testNotificationBusy() ? "Отправка..." : "🧪 Тестовое уведомление"}
                     </button>
                     <button
                       onClick={() => void handleSendDigest()}
-                      disabled={digestBusy() || !webhookEnabled()}
-                      style={`padding:6px 12px;background:#2d7d46;color:white;border:none;border-radius:6px;cursor:${digestBusy() || !webhookEnabled() ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${digestBusy() || !webhookEnabled() ? 0.6 : 1}`}
+                      disabled={digestBusy() || !(webhookEnabled() || telegramEnabled() || nativeEnabled())}
+                      style={`padding:6px 12px;background:#2d7d46;color:white;border:none;border-radius:6px;cursor:${digestBusy() || !(webhookEnabled() || telegramEnabled() || nativeEnabled()) ? "not-allowed" : "pointer"};font-size:12px;font-weight:500;opacity:${digestBusy() || !(webhookEnabled() || telegramEnabled() || nativeEnabled()) ? 0.6 : 1}`}
                     >
                       {digestBusy() ? "Отправка..." : "📊 Отправить дайджест сейчас"}
                     </button>
                     <span style="font-size:11px;color:#8e8e93">
-                      ntfy.sh не используется — только webhook.
+                      Каналы: webhook, Telegram, нативные уведомления ОС.
                     </span>
                   </div>
                 </div>

@@ -38,7 +38,7 @@ English version: [README.md](../README.md).
 | Триггеры | cron, одноразовый запуск (`triggerType: "once"`), изменение файла (chokidar), MCP-события, входящие webhooks (`POST /api/hooks/:task` с HMAC) |
 | Мультирепо | workspaces с валидацией путей, запуски по workspace, матрица поверх родительской задачи |
 | Наблюдаемость | история SQLite (success / error / timeout / partial / running), метрики (длительность, токены, стоимость), JSONL-логи с `/api/logs`, Prometheus `/metrics`, экспорт OTLP, логи по задачам, веб-дашборд с аналитикой за 14 дней, ретеншн истории и экспорт CSV/JSON |
-| Эксплуатация | dry-run, экспорт/импорт JSON, шаблоны, webhook-уведомления, настройки |
+| Эксплуатация | dry-run, экспорт/импорт JSON, шаблоны, уведомления по нескольким каналам (webhook, Telegram, нативные toast), тихие часы, дайджест, настройки |
 | Интерфейсы | панель OpenCode GUI, веб-дашборд, 22 инструмента для агента, встроенный скилл |
 
 ## Установка
@@ -102,7 +102,7 @@ npm run build && npm run build:gui
 | `manage_templates` | `action`, поля шаблона | Список, сохранение и удаление шаблонов задач |
 | `manage_profiles` | `action`, `name?`, `port?` | Список, создание, переключение и удаление изолированных профилей |
 | `transfer_tasks` | `action`, `data?` | Экспорт всех задач в JSON и импорт обратно |
-| `send_notification` | `action` (`test`/`digest`) | Проверка канала уведомлений или отправка дайджеста |
+| `send_notification` | `action` (`test`/`digest`), `channel?` (`all`/`webhook`/`telegram`/`native`) | Проверка каналов уведомлений или отправка дайджеста |
 | `get_dashboard_info` | — | Порт/URL дашборда, платформа, заголовок, активный профиль |
 | `cleanup_history` | `retentionDays?`, `maxRecords?` | Удаление старой истории по возрасту и/или лимиту записей |
 | `emit_event` | `eventName`, `payload?` | Запуск задач, подписанных на MCP-событие |
@@ -191,6 +191,15 @@ Windows (Планировщик Windows), macOS (launchd) и Linux (crontab). Р
 
 **Куда отправляются данные?**
 Никуда. История, логи, метрики и настройки хранятся локально в SQLite; телеметрии и аккаунтов нет.
+
+**Как включить уведомления в Telegram?**
+Создайте бота у [@BotFather](https://t.me/BotFather), скопируйте токен, напишите боту сообщение и возьмите `chat_id` из `getUpdates` (или используйте ID группы/канала). Укажите оба значения в панели или через `manage_settings` → `notifications.telegram` (`enabled`, `botToken`, `chatId`, при необходимости `parseMode`). Чтобы не хранить секреты в `settings.json`, задайте `OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN` и `OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID` — переменные используются, если поля пусты. Проверка: `send_notification` с `channel: "telegram"`.
+
+**Нужен ли отдельный пакет для системных уведомлений?**
+Нет. Windows Toast (PowerShell/WinRT), macOS Notification Center (`osascript`) и Linux `notify-send` вызываются напрямую, `node-notifier` не требуется. Включается через `notifications.native.enabled`.
+
+**Можно ли отключить уведомления на ночь?**
+Да. Задайте `notifications.quietHours` (`enabled`, `from`, `to` в `HH:MM`). В этом окне успешные и `partial` запуски не отправляются, а ошибки и таймауты приходят всегда.
 
 **Чем это отличается от `experimental.schedules` в OpenCode?**
 Встроенный планировщик выполняет задачи, пока OpenCode запущен. Этот плагин использует нативный планировщик ОС и добавляет DAG-пайплайны, матричные сборки, Quality Gates, webhooks и наблюдаемость.

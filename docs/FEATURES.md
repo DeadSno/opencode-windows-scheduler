@@ -397,27 +397,44 @@ matrix combinations are rejected explicitly.
 
 ### Notifications
 
-Webhook notifications on run completion, configurable in settings and testable with
+Notifications on run completion through three independent channels — webhook, Telegram
+and native OS notifications — configurable in settings and testable with
 `test_notification`.
 
-- **Delivery:** per-task completion (success/error/timeout) through a Discord/Slack
-  compatible webhook (`{ content, text }`). `webhook.timeoutMs` (default 10 000),
-  `webhook.retryCount` (default 2) and `webhook.retryDelayMs` (default 1000) control
-  the request; network errors, timeouts, HTTP 5xx and 429 are retried with exponential
-  backoff (capped at 30 s), other 4xx are not.
+- **Webhook delivery:** per-task completion (success/error/timeout) through a
+  Discord/Slack compatible webhook (`{ content, text }`). `webhook.timeoutMs`
+  (default 10 000), `webhook.retryCount` (default 2) and `webhook.retryDelayMs`
+  (default 1000) control the request; network errors, timeouts, HTTP 5xx and 429 are
+  retried with exponential backoff (capped at 30 s), other 4xx are not.
+- **Telegram:** Bot API `sendMessage` with `chat_id`, `parse_mode` (`HTML`,
+  `MarkdownV2`, `Markdown` or plain text), optional silent mode, forum topic
+  (`messageThreadId`) and a dashboard link (`includeDashboardLink`). Configured in the
+  GUI or with `manage_settings` → `notifications.telegram`. `botToken` and `chatId`
+  may instead come from `OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN` and
+  `OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID` so no secret is stored in `settings.json`;
+  the token is masked in every error message and log line.
+- **Native OS notifications:** Windows Toast (PowerShell/WinRT), macOS Notification
+  Center (`osascript`) and Linux `notify-send`. No extra dependency: `node-notifier`
+  is not required. `notifications.native.sound` toggles the sound where supported.
 - **Templates:** `templates.success` and `templates.error` accept placeholders
-  `{task}`, `{status}`, `{duration}`, `{error}`, `{emoji}`.
+  `{task}`, `{status}`, `{duration}`, `{error}`, `{emoji}`, `{cost}` and `{tokens}`.
+  When token/cost data is present the message gains a ` · 1500 tok · $0.0060` suffix.
 - **Filters:** `filters.include` / `filters.exclude` are task-name patterns with `*`
   wildcards; an empty include list means all tasks, exclude wins.
+- **Quiet hours:** `quietHours.enabled` with `from`/`to` in `HH:MM` (an overnight
+  range such as 22:00 → 08:00 is supported). During the window `success` and
+  `partial` are suppressed while `error` and `timeout` are still delivered.
 - **Matrix notifications:** on family completion — success, `partial` (`onPartial`)
   and all clones failed (`onAllFailed`). A stuck detector reports clones running
   longer than `matrix.stuckAfterMinutes` (default 60, `0` disables) once per run.
 - **Digest:** `digest.enabled` sends a daily (`frequency: "daily"`, at `digest.time`)
   or weekly (Mondays, catch-up afterwards) summary: runs, success rate, cost, tokens
-  and top errors. Also available as the `send_digest` RPC and the GUI's
-  «📊 Отправить дайджест сейчас» button (manual sends do not move the schedule).
-- **ntfy.sh is intentionally not implemented** (excluded by the assignment); the
-  network channel is the webhook, plus GUI toasts for manual runs.
+  and top errors through every enabled channel. Also available as the
+  `send_digest` RPC and the GUI's «📊 Отправить дайджест сейчас» button (manual sends
+  do not move the schedule).
+- **Test button:** sends a test message to `all`, `webhook`, `telegram` or `native`
+  and reports per-channel success/failure. Failures in one channel never block the
+  others and never throw into the task run.
 
 ### Crash recovery
 

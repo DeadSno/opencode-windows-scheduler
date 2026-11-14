@@ -4,6 +4,26 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-14
+
+### Added
+
+- **Telegram-канал:** Bot API `sendMessage` с `chat_id`, `parse_mode` (HTML / MarkdownV2 / Markdown / plain), тихим режимом, темой форума и ссылкой на дашборд; настройка через GUI и `manage_settings`.
+- **Нативные уведомления ОС:** Windows Toast, macOS Notification Center, Linux `notify-send`; без внешних зависимостей, `node-notifier` не требуется.
+- **Тихие часы:** success и partial подавляются в заданном окне (в том числе через полночь), ошибки и таймауты отправляются всегда.
+- **Стоимость и токены в сообщениях:** `tokens`/`costUsd` передаются из истории, в шаблонах доступны плейсхолдеры `{cost}` и `{tokens}`.
+- `test-notifications-v3.mjs` (40 проверок): экранирование Telegram, подмена fetch, сборка нативных команд, тихие часы, миграция настроек.
+
+### Changed
+
+- `deliver()` отправляет сообщение во все включённые каналы (webhook + Telegram + native) и не прерывает остальные при ошибке одного из них.
+- Тестовая кнопка и дайджест работают через любой включённый канал, а не только webhook.
+- `send_notification` принимает `channel` (`all` / `webhook` / `telegram` / `native`).
+
+### Security
+
+- Токен Telegram маскируется в ошибках и логах; секреты не попадают в `tasks.json` и историю запусков. Токен и `chat_id` можно задать через `OPENCODE_SCHEDULER_TELEGRAM_BOT_TOKEN` и `OPENCODE_SCHEDULER_TELEGRAM_CHAT_ID` вместо `settings.json`.
+
 ## [1.2.3] - 2026-11-13
 
 ### Changed
@@ -138,7 +158,8 @@ First public release.
 - Deleting a matrix parent deletes its family, but deleting a workspace does not touch existing matrix jobs.
 - Agent tools cover a subset of the RPC surface (see roadmap item 0.4).
 
-[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/DeadSno/opencode-windows-scheduler/compare/v1.2.0...v1.2.1

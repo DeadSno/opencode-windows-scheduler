@@ -337,7 +337,7 @@ async function main() {
       return;
     }
 
-    await handleCompletion(taskName, st, chainTarget, error, durationMs);
+    await handleCompletion(taskName, st, chainTarget, error, durationMs, tokens, costUsd);
     return;
   }
 
@@ -389,7 +389,7 @@ async function main() {
     definition?.deniedTools ?? null
   );
 
-  await handleCompletion(taskName, st, chainTarget, error, durationMs);
+  await handleCompletion(taskName, st, chainTarget, error, durationMs, tokens, costUsd);
 }
 
 /**
@@ -401,11 +401,13 @@ async function handleCompletion(
   st: Status,
   chainTarget: string | null,
   error: string | null,
-  durationMs: number
+  durationMs: number,
+  tokens?: number | null,
+  costUsd?: number | null
 ): Promise<void> {
   // Уведомление о завершении (webhook). Ошибки отправки логируются внутри
   // и не влияют на историю, цепочки и повторы.
-  await notifyTaskCompletion(taskName, st, durationMs, error);
+  await notifyTaskCompletion(taskName, st, durationMs, error, tokens, costUsd);
 
   // Matrix (Спринт 15): клон завершился — двигаем sequential-цепочку или
   // очередь concurrency-лимита (Спринт 17), а когда все клоны готовы —

@@ -130,7 +130,9 @@ from their clones instead of their own last run.
 | `src/workspaces.ts` | Workspace registry and path validation; env pairs and `.env` file resolution with secret masking |
 | `src/templates.ts` | Reusable task templates |
 | `src/settings.ts` | Plugin settings: notifications and history retention |
-| `src/notifications.ts` | Webhook delivery with retries/backoff, templates, task filters, matrix and stuck-clone notifications, daily/weekly digest |
+| `src/notifications.ts` | Multi-channel delivery (webhook, Telegram, native OS) with retries/backoff, templates, task filters, quiet hours, matrix and stuck-clone notifications, daily/weekly digest |
+| `src/core/telegram.ts` | Telegram Bot API `sendMessage`: parse-mode escaping, dashboard link, token validation and masking |
+| `src/core/native-notify.ts` | Native OS notifications: Windows Toast (PowerShell/WinRT), macOS `osascript`, Linux `notify-send`; no external dependency |
 | `src/history.ts` | History model and status types |
 | `src/version.ts` | Runtime plugin version (reads package.json) |
 | `src/core/retention.ts` | Daily history prune and incremental vacuum |
